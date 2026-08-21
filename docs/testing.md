@@ -11,10 +11,10 @@ cargo test -p domain
 
 ## Integration (DB)
 
-Run with `DATABASE_URL=postgres:///job_scheduler_test`.
+Run against the Compose PostgreSQL service:
 
 ```bash
-DATABASE_URL=postgres:///job_scheduler_test cargo test -p db
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler cargo test -p db -- --test-threads=1
 ```
 
 Manual SQL tests (also in `psql`):
@@ -60,18 +60,23 @@ Logs: see `/tmp/e2e_test.py` output and `psql` counts.
 - `EXPLAIN (ANALYZE, BUFFERS) SELECT ... WHERE status='QUEUED' ORDER BY priority` -> uses `idx_jobs_queued`
 - Frontend: queue health cards, worker table, job explorer with filters, execution timeline, logs, pause/resume buttons, live SSE.
 
-## Load (not automated)
+## Load
 
-Potential `k6` or `wrk`:
+The repository includes a controlled k6 admission-load test:
 ```
-wrk -t4 -c100 -d30s -s job_create.lua http://localhost:8080/jobs
+k6 run bench/k6.js
 ```
-Expected: ~200 jobs/sec per hot queue, ~1000 overall, p95 claim <20ms.
+
+It ramps from 10 to 100 virtual users and requires more than 99% `202 Accepted`
+responses. The 2026-08-21 local run completed 11,100 accepted submissions at
+219 jobs/s, with p95 166 ms and p99 below 200 ms.
 
 ## Test Evidence (2026-08-20 run)
 
-- Immediate job `7260396d` idempotency: second `Idempotency-Key: test-001` -> `409 Conflict` (verified).
-- Immediate job `d1c65c7d` completed in 2.1s with `echoed:true`.
-- Concurrency flood 10 sleep 3s with limit 3 -> `running` observed as 3,3,3,3,3 (never 4).
-- Worker crash: 3 batch echo jobs stuck `RUNNING` with `lease_owner=55f0...` (dead), manually requeued -> completed after outbox backfill.
-- DLQ: after fix, `always_fail` with `max_attempts=3` after 3 retries went to `FAILED` and appeared in `GET /dlq`.
+- Full workspace suite: 12/12 tests passed against PostgreSQL 18.
+- Database integration: idempotency, cron deduplication, lease fencing, and
+  capacity contention passed against a live Docker PostgreSQL service.
+- API lifecycle: immediate, delayed, batch, retry/DLQ, pause/resume,
+  concurrency, cron, and pagination were exercised against PostgreSQL + NATS.
+- External-result safety: an `external_payment` timeout remains
+  `UNKNOWN_EXTERNAL_RESULT`; the scheduler never guesses the downstream result.

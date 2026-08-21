@@ -4,14 +4,14 @@ async function api(path,o={},token=''){const h={'Content-Type':'application/json
 const cap=s=>String(s||'unknown').replaceAll('_',' ').toLowerCase().replace(/\b\w/g,x=>x.toUpperCase()),short=x=>x?x.slice(0,8)+'…':'—',dt=x=>x?new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(x)):'—',slug=x=>x.toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'')
 function useAuth(){const[t,setT]=useState(()=>localStorage.getItem('token')||''),[u,setU]=useState(()=>{try{return JSON.parse(localStorage.getItem('user')||'null')}catch{return null}});return{token:t,user:u,signed:!!t,login:(a,b)=>{setT(a);setU(b);localStorage.setItem('token',a);localStorage.setItem('user',JSON.stringify(b))},logout:()=>{setT('');setU(null);localStorage.removeItem('token');localStorage.removeItem('user')}}}
 export default function App(){const a=useAuth();return a.signed?<Dashboard auth={a}/>:<Auth auth={a}/>}
-function Dashboard({auth}){const[orgs,setOrgs]=useState([]),[projects,setProjects]=useState([]),[queues,setQueues]=useState([]),[stats,setStats]=useState({}),[workers,setWorkers]=useState([]),[org,setOrg]=useState(''),[project,setProject]=useState(''),[queue,setQueue]=useState(''),[modal,setModal]=useState(null),[note,setNote]=useState(null)
-const loadOrgs=useCallback(async()=>{const x=await api('/organizations',{},auth.token);setOrgs(x);setOrg(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token]);const loadProjects=useCallback(async()=>{if(!org){setProjects([]);setProject('');return}const x=await api(`/projects?org_id=${org}`,{},auth.token);setProjects(x);setProject(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token,org]);const loadQueues=useCallback(async()=>{if(!project){setQueues([]);setQueue('');return}const x=await api(`/queues?project_id=${project}`,{},auth.token);setQueues(x);setQueue(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token,project]);const refresh=async()=>{await loadOrgs();await loadProjects();await loadQueues()};useEffect(()=>{loadOrgs().catch(e=>setNote({e:1,t:e.message}))},[loadOrgs]);useEffect(()=>{loadProjects().catch(e=>setNote({e:1,t:e.message}))},[loadProjects]);useEffect(()=>{loadQueues().catch(e=>setNote({e:1,t:e.message}))},[loadQueues]);useEffect(()=>{const f=async()=>{setWorkers(await api('/workers',{},auth.token).catch(()=>[]))};f();const i=setInterval(f,8000);return()=>clearInterval(i)},[auth.token]);useEffect(()=>{if(!queues.length){setStats({});return}const f=async()=>{const x=await api(`/queues/batch-stats?ids=${queues.map(q=>q.id).join(',')}`,{},auth.token).catch(()=>[]);setStats(Object.fromEntries(x.map(i=>[i.queue_id,i])))};f();const i=setInterval(f,5000);return()=>clearInterval(i)},[auth.token,queues]);const q=queues.find(x=>x.id===queue);return <div className="app">
+function Dashboard({auth}){const[orgs,setOrgs]=useState([]),[projects,setProjects]=useState([]),[queues,setQueues]=useState([]),[stats,setStats]=useState({}),[workers,setWorkers]=useState([]),[healthy,setHealthy]=useState(true),[org,setOrg]=useState(''),[project,setProject]=useState(''),[queue,setQueue]=useState(''),[modal,setModal]=useState(null),[note,setNote]=useState(null)
+const loadOrgs=useCallback(async()=>{const x=await api('/organizations',{},auth.token);setOrgs(x);setOrg(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token]);const loadProjects=useCallback(async()=>{if(!org){setProjects([]);setProject('');return}const x=await api(`/projects?org_id=${org}`,{},auth.token);setProjects(x);setProject(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token,org]);const loadQueues=useCallback(async()=>{if(!project){setQueues([]);setQueue('');return}const x=await api(`/queues?project_id=${project}`,{},auth.token);setQueues(x);setQueue(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token,project]);const refresh=async()=>{await loadOrgs();await loadProjects();await loadQueues()};useEffect(()=>{loadOrgs().catch(e=>setNote({e:1,t:e.message}))},[loadOrgs]);useEffect(()=>{loadProjects().catch(e=>setNote({e:1,t:e.message}))},[loadProjects]);useEffect(()=>{loadQueues().catch(e=>setNote({e:1,t:e.message}))},[loadQueues]);useEffect(()=>{const f=async()=>{setWorkers(await api('/workers',{},auth.token).catch(()=>[]))};f();const i=setInterval(f,8000);return()=>clearInterval(i)},[auth.token]);useEffect(()=>{const f=async()=>{try{await api('/health');setHealthy(true)}catch{setHealthy(false)}};f();const i=setInterval(f,5000);return()=>clearInterval(i)},[]);useEffect(()=>{if(!queues.length){setStats({});return}const f=async()=>{const x=await api(`/queues/batch-stats?ids=${queues.map(q=>q.id).join(',')}`,{},auth.token).catch(()=>[]);setStats(Object.fromEntries(x.map(i=>[i.queue_id,i])))};f();const i=setInterval(f,5000);return()=>clearInterval(i)},[auth.token,queues]);const q=queues.find(x=>x.id===queue);return <div className="app">
 <header>
 <div className="brand">
 <b>↯</b> Jobflow <span>/ Scheduler</span>
 </div>
-<div className="system">
-<i/>System operational<button className="avatar" onClick={auth.logout}>{(auth.user?.display_name||auth.user?.email||'U')[0].toUpperCase()}</button>
+<div className={'system '+(healthy?'':'offline')}>
+<i/>{healthy?'System operational':'API unavailable'}<button className="avatar" onClick={auth.logout}>{(auth.user?.display_name||auth.user?.email||'U')[0].toUpperCase()}</button>
 </div>
 </header>{note&&<div className={'notice '+(note.e?'error':'success')}>{note.t}<button onClick={()=>setNote(null)}>×</button>
 </div>}<div className="layout">
@@ -65,7 +65,7 @@ function Welcome({orgs,projects,open}){const i=!orgs.length?0:!projects.length?1
 <p>{['Create a secure workspace for your team.','Group related queues and operational views.','Set concurrency, priority and retry behavior.'][n]}</p>
 </div>{n===i&&<button className="primary" onClick={()=>open(T[n])}>Continue</button>}</div>)}</section>
 </div>}
-function Queue({q,stats,auth,refresh,note}){const[jobs,setJobs]=useState([]),[filter,setFilter]=useState(''),[job,setJob]=useState(null),[logs,setLogs]=useState([]),[create,setCreate]=useState(false),[loading,setLoading]=useState(true);const load=useCallback(async()=>{setLoading(true);const p=new URLSearchParams({queue_id:q.id,page_size:'100'});if(filter)p.set('status',filter);const x=await api(`/jobs?${p}`,{},auth.token).catch(e=>{note({e:1,t:e.message});return{data:[]}});setJobs(x.data||[]);setLoading(false)},[auth.token,filter,note,q.id]);useEffect(()=>{load();const i=setInterval(load,5000);return()=>clearInterval(i)},[load]);const inspect=async x=>{setJob(x);setLogs(await api(`/jobs/${x.id}/logs`,{},auth.token).catch(()=>[]))},retry=async x=>{try{await api(`/jobs/${x.id}/retry`,{method:'POST'},auth.token);note({t:'Job queued for another attempt.'});load();refresh()}catch(e){note({e:1,t:e.message})}};return <div className="content">
+function Queue({q,stats,auth,refresh,note}){const[jobs,setJobs]=useState([]),[filter,setFilter]=useState(''),[search,setSearch]=useState(''),[job,setJob]=useState(null),[logs,setLogs]=useState([]),[create,setCreate]=useState(false),[loading,setLoading]=useState(true),[updated,setUpdated]=useState(null);const load=useCallback(async()=>{setLoading(true);const p=new URLSearchParams({queue_id:q.id,page_size:'100'});if(filter)p.set('status',filter);const x=await api(`/jobs?${p}`,{},auth.token).catch(e=>{note({e:1,t:e.message});return{data:[]}});setJobs(x.data||[]);setUpdated(new Date());setLoading(false)},[auth.token,filter,note,q.id]);useEffect(()=>{load();const i=setInterval(load,5000);return()=>clearInterval(i)},[load]);const inspect=async x=>{setJob(x);setLogs(await api(`/jobs/${x.id}/logs`,{},auth.token).catch(()=>[]))},retry=async x=>{try{await api(`/jobs/${x.id}/retry`,{method:'POST'},auth.token);note({t:'Job queued for another attempt.'});load();refresh()}catch(e){note({e:1,t:e.message})}},toggle=async()=>{try{await api(`/queues/${q.id}/${q.is_paused?'resume':'pause'}`,{method:'POST'},auth.token);await refresh();note({t:q.is_paused?'Queue resumed.':'Queue paused. New jobs will wait safely.'})}catch(e){note({e:1,t:e.message})}},visible=jobs.filter(x=>`${x.id} ${x.idempotency_key||''}`.toLowerCase().includes(search.toLowerCase()));return <div className="content">
 <div className="page-head">
 <div>
 <div className="crumb">Projects / Queues</div>
@@ -75,6 +75,7 @@ function Queue({q,stats,auth,refresh,note}){const[jobs,setJobs]=useState([]),[fi
 </div>
 <div>
 <button onClick={load}>Refresh</button>
+<button onClick={toggle}>{q.is_paused?'Resume queue':'Pause queue'}</button>
 <button className="primary" onClick={()=>setCreate(true)}>Create job</button>
 </div>
 </div>
@@ -89,8 +90,9 @@ function Queue({q,stats,auth,refresh,note}){const[jobs,setJobs]=useState([]),[fi
 <div className="panel-head">
 <div>
 <h2>Jobs</h2>
-<p>Live list updates every five seconds.</p>
+<p>{updated?`Updated ${updated.toLocaleTimeString([], {hour:'numeric',minute:'2-digit',second:'2-digit'})}`:'Live list updates every five seconds.'}</p>
 </div>
+<input className="job-search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search job ID or key" aria-label="Search jobs"/>
 <select value={filter} onChange={e=>setFilter(e.target.value)}>
 <option value="">All states</option>{S.map(x=>
 <option key={x} value={x}>{cap(x)}</option>)}</select>
@@ -108,7 +110,7 @@ function Queue({q,stats,auth,refresh,note}){const[jobs,setJobs]=useState([]),[fi
 </thead>
 <tbody>{loading&&!jobs.length?<tr>
 <td colSpan="5" className="empty-cell">Loading jobs…</td>
-</tr>:jobs.map(x=>
+</tr>:visible.map(x=>
 <tr key={x.id}>
 <td>
 <button className="job" onClick={()=>inspect(x)}>
@@ -124,10 +126,10 @@ function Queue({q,stats,auth,refresh,note}){const[jobs,setJobs]=useState([]),[fi
 <td className="muted">{dt(x.created_at)}</td>
 <td>
 <button className="text" onClick={()=>inspect(x)}>Inspect</button>{['FAILED','RETRY_WAIT','UNKNOWN_EXTERNAL_RESULT'].includes(String(x.status).toUpperCase())&&<button className="text" onClick={()=>retry(x)}>Retry</button>}</td>
-</tr>)}{!loading&&!jobs.length&&<tr>
+</tr>)}{!loading&&!visible.length&&<tr>
 <td colSpan="5" className="empty-cell">
-<b>No jobs yet</b>
-<span>Create a job to see queue activity here.</span>
+<b>{jobs.length?'No matching jobs':'No jobs yet'}</b>
+<span>{jobs.length?'Try clearing your search or status filter.':'Create a job to see queue activity here.'}</span>
 <button onClick={()=>setCreate(true)}>Create job</button>
 </td>
 </tr>}</tbody>

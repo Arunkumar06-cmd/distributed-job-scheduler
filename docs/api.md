@@ -94,8 +94,6 @@ JWT HS256, 7d expiry, `sub = user_id`. Passwords `argon2` hashed.
 
 `GET /metrics` -> `{jobs:{total,queued,running,completed,failed,retry_wait,dlq}, workers:{active}, db:{pool_size,idle}, nats:{connected}}`
 
-`GET /events/stream` `Authorization: Bearer` -> `text/event-stream` (`job.created`, `job.completed`, etc. via broadcast channel)
-
 ## Errors
 
 All errors: `status -> {error:{code, message}, request_id: uuid}`

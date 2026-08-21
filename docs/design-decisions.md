@@ -20,10 +20,10 @@
 
 **Why not `SELECT FOR UPDATE` + `DELETE` in same TX as publish?** Holding TX during network I/O blocks connections, holds row locks, inflates `pg_stat_activity`. Instead: `claim (TX) -> publish (network) -> clear (TX)`.
 
-## Queue Concurrency: `FOR UPDATE NOWAIT` vs Optimistic
+## Queue Concurrency: `FOR UPDATE NOWAIT` + Capacity Tokens vs Optimistic Counters
 
 **Chosen: `FOR UPDATE NOWAIT` on queue row**
-- Simple, provably serializes capacity check. `COUNT RUNNING` + claim in same TX under queue lock guarantees `RUNNING <= max_concurrency`.
+- Simple, provably serializes admission. The claim transaction locks the queue, reserves one available capacity token with `SKIP LOCKED`, and claims one job; the token is released only when the execution reaches a terminal state.
 - `NOWAIT` fails fast instead of blocking; worker NAKs with delay and retries.
 - Alternatives: `SELECT ... FOR UPDATE` (blocks, causes contention), optimistic `UPDATE ... WHERE running < limit` (needs counter table, race), or Postgres `advisory` per queue (more complexity).
 - Trade-off: Hot queue serializes claims (throughput ~ 1 claim at a time per queue). Acceptable for assignment; production could use `pg_try_advisory_xact_lock(hashtext(queue_id))` or sharding.
@@ -51,20 +51,29 @@ Defined `Scheduled, Queued, Claimed, Running, RetryWait, Completed, Failed, Canc
 
 Batches via `batches` table + trigger `update_batch_on_job_complete` (atomic counters). DLQ `ON DELETE RESTRICT` preserves history; `replayed_to_job_id` links replay. Not `CASCADE` to avoid losing audit when job deleted.
 
-## Frontend: Polling + SSE
+## Frontend: Scoped Polling
 
-SSE (`text/event-stream`) via broadcast channel is simpler than WebSockets for one-way updates. Frontend polls every 3s for jobs, 5s for workers, and subscribes to SSE for push (keep-alive 15s). Choice avoids `socket.io` dependency.
+The dashboard polls scoped API snapshots for jobs, queue health, and workers.
+WebSocket/SSE fan-out is deliberately deferred until event subscriptions can be
+enforced with the same organization and project authorization boundaries as
+the REST API. This keeps the current dashboard simple and avoids accidental
+cross-tenant broadcasts.
 
-## What Was Not Done (Intentionally)
+## Implemented Extensions
 
-- **Workflow DAG**: Would require topological sort + `depends_on` FKs + scheduler that checks predecessors. Omitted for time; schema could add `job_dependencies`.
-- **Rate limiting**: Could add `token_bucket` per queue via `pg_advisory_lock` or `governor` crate; omitted.
+- **Workflow DAG**: Workflow creation records dependency edges; dependent jobs start in `WAITING` and are released only after their predecessors complete.
+- **Rate limiting**: Queue-level admission uses a sliding-window policy before accepting a new job.
+
+## Deferred Extensions
+
 - **Queue sharding**: Would need consistent hash on `job_id` -> partition, and consumer per shard. Omitted (single stream per queue suffices).
 - **Event-driven (webhooks)**: Would need `http` handler with retry + DLQ for webhook failures. Handler trait is extensible.
 - **RBAC**: Currently `org_memberships` with `owner/admin/member/viewer` but not enforced per route beyond `is_member`. Full RBAC would add middleware `require_role`.
 
-## Performance Expectations
+## Measured Load Snapshot
 
-- Claim latency p50 <5ms, p95 <20ms (includes queue lock + count). Throughput per hot queue ~ 200 jobs/sec (due to serialization), overall ~ 1000 jobs/sec across queues (8 workers).
-- Outbox poll 250ms, publish batch 100, NATS file storage fsync every 1s.
-- Load test (not run in CI) would use `k6` or `cargo bench`.
+On the local Docker/PostgreSQL/NATS environment used for this repository, the
+admission-load script submitted 11,100 jobs at 219 accepted jobs/s with p95
+latency of 166 ms and p99 below 200 ms. This is a development-machine result,
+not a production capacity promise. See `bench/results.md` for the test shape
+and `docs/testing.md` for the verification boundary.

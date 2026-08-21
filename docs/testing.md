@@ -24,12 +24,9 @@ Manual SQL tests (also in `psql`):
 - **Lease fencing**: Worker A claim `epoch=1`, worker B claim after `lease_expires_at` -> `epoch=2`, A's `UPDATE ... WHERE epoch=1` affects 0 rows.
 - **Cron dedup**: Two schedulers `INSERT scheduled_occurrences (job_id, fire_time) ON CONFLICT DO NOTHING` -> one succeeds, other `0 rows`, only one job created.
 
-## E2E (API)
+## API lifecycle validation
 
-```bash
-python3 /tmp/e2e_test.py
-```
-Covers:
+The manual validation workflow covers:
 - Auth register/login, org/project/queue CRUD
 - Immediate job `Queueds->Completed` (2s)
 - Delayed job `Scheduled->Queued` after `scheduled_for`
@@ -40,7 +37,8 @@ Covers:
 - Cron: `* * * * * *` -> at least 1 occurrence in 8s
 - Pagination: `page_size=2` returns 2, `total` correct
 
-Logs: see `/tmp/e2e_test.py` output and `psql` counts.
+Run it against a clean Compose environment and record the resulting job states
+through the dashboard, API, and `psql` counts.
 
 ## Chaos
 
@@ -58,7 +56,7 @@ Logs: see `/tmp/e2e_test.py` output and `psql` counts.
 - `GET /queues/:id/stats` per queue
 - `GET /workers` -> `ONLINE/STALE/OFFLINE` based on `NOW - last_heartbeat`
 - `EXPLAIN (ANALYZE, BUFFERS) SELECT ... WHERE status='QUEUED' ORDER BY priority` -> uses `idx_jobs_queued`
-- Frontend: queue health cards, worker table, job explorer with filters, execution timeline, logs, pause/resume buttons, live SSE.
+- Frontend: queue health cards, worker table, job explorer with filters, execution timeline, logs, and pause/resume controls.
 
 ## Load
 

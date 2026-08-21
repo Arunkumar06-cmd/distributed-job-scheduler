@@ -1,172 +1,104 @@
-# Demo Guide — 7 Scenarios for Grader (COPY-PASTE, no typing)
+# Dashboard Demo Recording Runbook
 
-<video src="../demo.mp4" controls width="100%"></video>
+This is a repeatable 4–6 minute walkthrough for a GitHub release or project
+submission. Record a real session; do not use synthetic placeholder clips.
 
-> `demo.mp4` 2:45 — same 7 scenarios below. Upload to YouTube unlisted and replace `../demo.mp4` with `https://youtu.be/...`.
+## 1. Prepare a clean environment
 
-## 0. Start — COPY-PASTE IN ORDER, keep 3 terminals open
+Use three terminals from the repository root.
 
-**Terminal 1 — NATS + API (keep open):**
 ```bash
-cd /Users/arunkumar/distributed-job-scheduler
-nats-server -js -sd /tmp/nats-js -p 4222 -m 8222 &
-sleep 2 && ps aux | grep nats-server | grep -v grep
-DATABASE_URL=postgres:///job_scheduler cargo run -p api
-# wait until you see: listening addr: 0.0.0.0:8080
-# DO NOT close this terminal. Open new tab for test: Cmd+T
+docker compose up -d postgres nats
+
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler \
+NATS_URL=nats://127.0.0.1:4222 \
+cargo run -p api
 ```
 
-**Terminal 2 — Worker (new window, keep open):**
 ```bash
-cd /Users/arunkumar/distributed-job-scheduler
-DATABASE_URL=postgres:///job_scheduler cargo run -p worker
-# wait until: found existing stream + worker registered + consumer started
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler \
+NATS_URL=nats://127.0.0.1:4222 \
+cargo run -p worker
 ```
 
-**Terminal 3 — Frontend (new window, keep open):**
 ```bash
-cd /Users/arunkumar/distributed-job-scheduler/frontend
-npm install
+cd frontend
+npm ci
 npm run dev
-# wait: VITE v5.4.21 ready in 420 ms  Local: http://localhost:3000/
 ```
 
-**Check all up — new tab Cmd+T, COPY-PASTE:**
-```bash
-curl -s http://localhost:8080/health | python3 -m json.tool
-curl -s http://localhost:8080/metrics | python3 -m json.tool | head -20
-ps aux | grep -E "api|worker|nats" | grep -v grep | head -5
-```
+Before recording, verify `http://localhost:8080/health` returns `200` and open
+`http://localhost:3000` at 1440×900 or larger. Hide terminals and browser
+bookmarks. Use a fresh email address so the recording contains no personal
+data.
 
-## 1. Create tenant — COPY-PASTE ONE BLOCK (no manual IDs)
+## 2. Recording outline
 
-```bash
-cd /Users/arunkumar/distributed-job-scheduler
-TOKEN=$(curl -s -X POST http://localhost:8080/auth/register -H 'Content-Type: application/json' -d '{"email":"demo_'$(date +%s)'@test.com","password":"password123","display_name":"Demo"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
-echo "TOKEN $TOKEN" | cut -c1-30
-ORG=$(curl -s -X POST http://localhost:8080/organizations -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"name":"Demo Org","slug":"demo-'$(date +%s)'"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-echo "ORG $ORG"
-PROJ=$(curl -s -X POST http://localhost:8080/projects -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"org_id":"'"$ORG"'","name":"Demo Proj","slug":"demo-proj-'$(date +%s)'"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-echo "PROJ $PROJ"
-Q=$(curl -s -X POST http://localhost:8080/queues -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"project_id":"'"$PROJ"'","name":"demo-queue","max_concurrency":3}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-echo "Q $Q"
-# IMPORTANT: wait 12s for worker SKIP LOCKED discovery (poll 10s)
-sleep 12
-echo "Ready — queue $Q discovered"
-```
+### 0:00–0:30 — orient the viewer
 
-**Website clicks (no typing):**
-- Open `http://localhost:3000` → `Register` → `email: demo@test.com` `password: password123` `display_name: Demo` → `Register`
-- Left `+ Org` → `Demo Org` `demo-org` → `Create` → select `Demo Org` dropdown
-- `+ Project` → `Demo Proj` `demo-proj` → select `Demo Proj`
-- `+ Queue` → `demo-queue` `3` → select `demo-queue` → left card shows `Q:0 R:0 C:0`
+Show the login/register screen, then register a new user. Create one
+organization and project. State plainly that PostgreSQL is the system of
+record and NATS JetStream delivers work to independently running workers.
 
-## 2. Demo 1 — Create Job (COPY-PASTE)
+### 0:30–1:15 — create a controlled queue
 
-```bash
-J=$(curl -s -X POST http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: demo1" -H 'Content-Type: application/json' -d '{"queue_id":"'"$Q"'","payload":{"type":"echo","data":"hello"}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-echo "Job $J Queued"
-sleep 3
-curl -s http://localhost:8080/jobs/$J -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | grep -E "status|result"
-# Expected: "status": "Completed", "result": {"echoed": true}
-```
+Create a queue named `orders-demo` with concurrency `2`. Show its queue health
+card and explain that pause/resume and the concurrency limit are queue-scoped.
+If the UI exposes retry configuration, select exponential backoff with a small
+attempt limit suitable for the demo.
 
-## 3. Demo 2 — Pause / Resume (COPY-PASTE)
+### 1:15–2:00 — immediate and delayed work
 
-```bash
-curl -s -X POST http://localhost:8080/queues/$Q/pause -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print('paused', json.load(sys.stdin)['is_paused'])"
-# true
-J2=$(curl -s -X POST http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"queue_id":"'"$Q"'","payload":{"type":"echo"}}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-sleep 2
-curl -s http://localhost:8080/jobs/$J2 -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print('paused job', json.load(sys.stdin)['status'])"
-# Queued (stays)
-curl -s -X POST http://localhost:8080/queues/$Q/resume -H "Authorization: Bearer $TOKEN" > /dev/null; echo "resumed"
-sleep 3
-curl -s http://localhost:8080/jobs/$J2 -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print('resumed', json.load(sys.stdin)['status'])"
-# Completed
-```
+Create one immediate echo job. In the job explorer, show its transition from
+`QUEUED` through execution to `COMPLETED`; then open its detail view and show
+the execution record and log. Create a second job with a near-future schedule
+and show that it stays `SCHEDULED` until due.
 
-**Website:** Left `demo-queue` `⏸️ Pause Queue` → click → `⚠️ Confirm Pause?` → click again → `PAUSED` → `Jobs` row stays `QUEUED` → `▶ Resume Queue` → row `Completed`.
+### 2:00–2:45 — queue control and concurrency
 
-## 4. Demo 3 — Concurrency 3, Flood 20 (COPY-PASTE)
+Pause `orders-demo`, submit a job, and show that it remains queued. Resume the
+queue and show it complete. Submit several short-running jobs and point out
+that the running count never exceeds `2`.
 
-```bash
-for i in {1..20}; do curl -s -X POST http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"queue_id":"'"$Q"'","payload":{"type":"sleep","secs":2}}' & done; wait; echo flooded
-for i in 1 2 3 4 5 6; do S=$(curl -s http://localhost:8080/queues/$Q/stats -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['running'])"); echo "running $S"; if [ "$S" -gt 3 ]; then echo "FAIL"; exit 1; fi; sleep 1; done; echo "concurrency OK never >3"
-```
+### 2:45–3:35 — failure, retry, and DLQ
 
-Website left bar `[■■■□□□□□] 3/3` solid = leases.
+Create a job that intentionally fails using the demo handler supported by the
+running worker. Show one retry attempt, then the terminal failed state and its
+DLQ entry. Open the DLQ view and demonstrate replay only if the replayed job is
+safe to run again; explain that handlers must use the job ID as their external
+idempotency key.
 
-## 5. Demo 4 — Kill Worker Epoch Fencing (COPY-PASTE)
+### 3:35–4:15 — operations view
 
-```bash
-ps aux | grep "target/debug/worker" | grep -v grep | awk '{print $2}' | head -1
-# copy PID, then:
-kill -9 <paste-PID>
-# In new terminal, restart worker:
-# cd /Users/arunkumar/distributed-job-scheduler
-# DATABASE_URL=postgres:///job_scheduler cargo run -p worker
-# Then:
-psql -d job_scheduler -c "SELECT left(id::text,8), lease_epoch, status FROM jobs WHERE queue_id='$Q' ORDER BY created_at DESC LIMIT 3;"
-# lease_epoch 1→2
-psql -d job_scheduler -c "SELECT status,attempt FROM job_executions WHERE job_id='<paste-sleep10-id>' ORDER BY attempt"
-# ABANDONED + COMPLETED
-```
+Show the workers page with heartbeat status, then return to the queue card and
+job explorer. Call out that jobs retain timestamps, worker assignment,
+execution history, and logs for diagnosis.
 
-## 6. Demo 5 — Idempotency (COPY-PASTE)
+### 4:15–4:45 — close with reliability boundaries
 
-```bash
-curl -s -X POST http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: same" -H 'Content-Type: application/json' -d '{"queue_id":"'"$Q'","payload":{"type":"echo"}}' | python3 -m json.tool | grep -E "status|id"
-# Queued
-curl -s -X POST http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: same" -H 'Content-Type: application/json' -d '{"queue_id":"'"$Q'","payload":{"type":"echo"}}' | python3 -m json.tool | grep -E "error|code"
-# Conflict 409
-psql -d job_scheduler -c "SELECT count(*) FROM jobs WHERE idempotency_key='same'"
-# 1
-```
+Finish on the architecture diagram in the README. Mention the transactional
+outbox, lease-epoch fencing, and at-least-once delivery. Do not claim exactly
+once execution or production certification; external effects remain
+idempotency-sensitive and deployment/load/soak evidence belongs in CI and
+operations documentation.
 
-## 7. Demo 6 — Retry → DLQ + AI (COPY-PASTE)
+## 3. Capture and publish
 
-```bash
-JD=$(curl -s -X POST http://localhost:8080/jobs -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"queue_id":"'"$Q"'","payload":{"type":"always_fail"},"max_attempts":3}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-echo $JD
-for i in 1 2 3 4 5 6; do sleep 2; curl -s http://localhost:8080/jobs/$JD -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status'))"; done
-# RETRY_WAIT → FAILED
-curl -s "http://localhost:8080/dlq?queue_id=$Q" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | head -20
-DLQ=$(curl -s "http://localhost:8080/dlq?queue_id=$Q" -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
-curl -s -X POST http://localhost:8080/dlq/$DLQ/replay -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | head -10
-sleep 11; psql -d job_scheduler -c "SELECT left(summary,60) FROM failure_summaries ORDER BY created_at DESC LIMIT 1"
-# Downstream service repeatedly...
-```
+1. Record at 1080p, 30 fps, with system notifications disabled.
+2. Trim dead time and redact tokens, email addresses, hostnames, and terminal
+   history. Aim for 4–6 minutes.
+3. Export H.264 MP4 with a descriptive filename such as
+   `distributed-job-scheduler-demo.mp4`.
+4. Upload the video to a GitHub Release or YouTube/Vimeo as unlisted, then add
+   the permanent link to the README's **Demo** section.
+5. Keep the source recording out of Git history unless it is intentionally
+   small and useful to clone; release assets are preferred for repository
+   hygiene.
 
-Website `DLQ` tab → `Replay` button.
+## 4. Pre-publish checklist
 
-## 8. Demo 7 — Workflow A,B→C (COPY-PASTE)
-
-```bash
-WF=$(curl -s -X POST http://localhost:8080/workflows -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"project_id":"'"$PROJ"'","name":"wf-demo","jobs":[{"queue_id":"'"$Q"'","payload":{"type":"echo","dag":"A"}},{"queue_id":"'"$Q"'","payload":{"type":"echo","dag":"B"}},{"queue_id":"'"$Q"'","payload":{"type":"echo","dag":"C"}}],"edges":[{"parent":0,"child":2},{"parent":1,"child":2}]}' | python3 -c "import sys,json; print(json.load(sys.stdin)['workflow_id'])")
-echo $WF
-sleep 6
-curl -s http://localhost:8080/workflows/$WF -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | grep -E "dag|status" | head -10
-# A Completed, B Completed, C Completed
-```
-
-Website `Jobs` filter `WAITING` → `C` flips.
-
-## 9. Checks (COPY-PASTE)
-
-```bash
-curl -s http://localhost:8080/metrics | python3 -m json.tool | head -20
-curl -s http://localhost:8080/workers -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | head -20
-psql -d job_scheduler -c "SELECT status, count(*) FROM jobs GROUP BY status;"
-nats stream ls
-```
-
-## 10. Stop (COPY-PASTE)
-
-```bash
-ps aux | grep "target/debug/api\|target/debug/worker" | grep -v grep | awk '{print $2}' | xargs kill
-lsof -i :8080 | head
-# Cmd+Shift+5 → Stop Recording (square) or Cmd+Ctrl+Esc
-```
-
-**All above are pure copy-paste — no typing, no manual ID paste (uses $Q, $TOKEN, $J vars). For recording, run `bash /tmp/demo_final.sh` (does all 7).**
+- [ ] No credentials, JWTs, database URLs, or personal information appear.
+- [ ] The displayed states match the actual API and dashboard behavior.
+- [ ] Queue concurrency, retry/DLQ, and worker status are visible.
+- [ ] The description states at-least-once delivery and idempotent handlers.
+- [ ] The README links to the final, working recording.

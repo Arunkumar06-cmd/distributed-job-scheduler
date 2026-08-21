@@ -25,7 +25,6 @@
     "/jobs/{id}/retry": { "post": { "summary": "Retry" } },
     "/scheduled-jobs": { "post": { "summary": "Create scheduled" }, "get": { "summary": "List" } },
     "/workers": { "get": { "summary": "List workers" } },
-    "/metrics": { "get": { "summary": "Metrics" } },
-    "/events/stream": { "get": { "summary": "SSE stream" } }
+    "/metrics": { "get": { "summary": "Metrics" } }
   }
 }

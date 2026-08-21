@@ -34,11 +34,11 @@ This project focuses on the difficult parts of a scheduler rather than a thin qu
 
 ## Demo
 
-<video src="demo.mp4" controls width="100%" poster="docs/screenshot-shell.png"></video>
-
-**Watch:** `demo.mp4` (2:45, 7 scenarios) — also on YouTube unlisted: `https://youtu.be/REPLACE_ME` (upload `demo.mp4` and replace link)
-
-> Recorded with OBS, your voice, `bash /tmp/demo_final.sh` + `http://localhost:3000` `SYSTEM CORE SHELL 100vh #09090b` — see `DEMO.md` for exact clicks.
+Use the [demo recording runbook](DEMO.md) to capture a repeatable walkthrough
+of queue configuration, execution, retry/DLQ handling, and dashboard
+inspection. A polished recording should be attached to the GitHub release or
+linked here once captured; this repository does not present a placeholder clip
+as product evidence.
 
 
 ## Stack
@@ -62,10 +62,11 @@ DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler NATS_URL=
 DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler NATS_URL=nats://127.0.0.1:4222 cargo run -p worker
 
 # frontend
-cd frontend && npm install && npm run dev  # http://localhost:3000 -> proxies to :8080
+cd frontend && npm ci && npm run dev  # http://localhost:3000 -> proxies to :8080
 ```
 
-Seed admin: `admin@example.com / password123` via `/auth/register`.
+Create the first user through the registration screen; it becomes the owner of
+the organization and project it creates.
 
 ## Architecture
 
@@ -85,44 +86,27 @@ Browser -> LB -> API (stateless) -> PostgreSQL (truth) -> Outbox -> NATS JetStre
 
 See `docs/architecture.md` and `docs/er-diagram.md`.
 
-## API
+## API surface
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | /auth/register | - | Register |
-| POST | /auth/login | - | Login -> JWT |
-| POST | /organizations | Bearer | Create org |
-| GET | /organizations | Bearer | List orgs |
-| POST | /projects | Bearer | Create project (org_id) |
-| GET | /projects?org_id= | Bearer | List |
-| POST | /queues | Bearer | Create queue (project_id, max_concurrency) |
-| PATCH | /queues/:id | Bearer | Update |
-| POST | /queues/:id/pause | Bearer | Pause |
-| POST | /queues/:id/resume | Bearer | Resume |
-| GET | /queues/:id/stats | Bearer | Stats |
-| POST | /jobs | Bearer | Create (Idempotency-Key header) |
-| GET | /jobs?queue_id=&status=&page= | Bearer | List with pagination |
-| POST | /jobs/:id/retry | Bearer | Manual retry |
-| POST | /jobs/batch | Bearer | Batch (1..1000) |
-| POST | /scheduled-jobs | Bearer | Cron `cron_expr + timezone` or `run_once_at` |
-| GET | /workers | Bearer | Workers with ONLINE/STALE/OFFLINE |
-| GET | /jobs/:id/executions | Bearer | Execution history |
-| GET | /jobs/:id/logs | Bearer | Structured logs |
-| GET | /dlq?queue_id= | Bearer | DLQ |
-| POST | /dlq/:id/replay | Bearer | Replay DLQ |
-| GET | /health | - | Health |
-| GET | /metrics | Bearer | Membership-scoped metrics |
+| Area | What it supports |
+| --- | --- |
+| Identity and tenancy | Registration, organizations, projects, memberships |
+| Queue operations | Configuration, pause/resume, statistics, admission limits |
+| Jobs | Immediate, delayed, scheduled, recurring, batch, retry, filtering, pagination |
+| Operations | Workers, executions, structured logs, DLQ inspection and replay |
+| Health | Public `/health`; membership-scoped `/metrics` |
 
 **Idempotency**: `Idempotency-Key` header or body field -> `UNIQUE(queue_id, idempotency_key)` -> `409 Conflict` on duplicate. NATS publish uses `Nats-Msg-Id = outbox.id` for broker dedup. Business handlers must be idempotent (`job_id` as external key).
 
-See `docs/api.md`.
+See the complete [API reference](docs/api.md) and machine-readable
+[OpenAPI document](docs/openapi.json).
 
 ## Job Lifecycle
 
 ```
 SCHEDULED -> QUEUED -> CLAIMED -> RUNNING -> COMPLETED
-                              |-> RETRY_WAIT -> QUEUED (via requeue after next_retry_at)
-                              |-> FAILED -> DLQ (max_attempts exceeded)
+                                            |-> RETRY_WAIT -> QUEUED (after next_retry_at)
+                                            |-> FAILED -> DLQ (max_attempts exceeded)
 ```
 
 Retry strategies: `fixed`, `linear`, `exponential` with capped delay.
@@ -130,7 +114,7 @@ Retry strategies: `fixed`, `linear`, `exponential` with capped delay.
 ## Concurrency & Reliability
 
 - **Outbox**: `BEGIN; INSERT job; INSERT outbox; COMMIT` -> relay claims `FOR UPDATE SKIP LOCKED` with `relay_locked_until`, publishes outside TX, then `DELETE`. Lease expires -> reclaimed.
-- **Claim**: `SELECT queue FOR UPDATE NOWAIT` -> check `is_paused` -> `COUNT RUNNING < max_concurrency` -> `UPDATE job SET status=CLAIMED, lease_epoch+1, lease_owner, lease_expires_at`. All in one TX. Long task runs after commit, with background `lease_renewer` and `InProgress` (via AckKind::Progress).
+- **Claim**: lock the queue with `FOR UPDATE NOWAIT`, check pause state, reserve a capacity token with `SKIP LOCKED`, and transition the job to `CLAIMED` in one transaction. Long work runs only after commit, with lease renewal and NATS `InProgress` acknowledgements.
 - **Complete**: `UPDATE jobs SET status=COMPLETED WHERE lease_epoch = $epoch AND lease_owner = $worker` -> `0 rows` means fenced.
 - **Scheduler**: `pg_try_advisory_lock(0x73636865)` leader election; cron dedup via `scheduled_occurrences` PK; timezone aware.
 - **Graceful shutdown**: `SIGTERM -> stop accepting -> wait grace (30s) -> mark worker Offline`.
@@ -143,7 +127,7 @@ Dashboard at `http://localhost:3000`:
 - Job explorer with filters (status, queue, priority), pagination, retry, batch
 - Job detail: payload, executions, logs, retry schedule
 - Metrics: throughput, pool usage, NATS status
-- Live updates via SSE + polling (3s jobs, 5s workers)
+- Polling-based refresh for jobs, queue health, and workers
 
 ## Tests
 
@@ -151,10 +135,6 @@ Dashboard at `http://localhost:3000`:
 cargo test --workspace -- --test-threads=1
 cargo clippy --workspace --all-targets -- -D warnings
 cd frontend && npm ci && npm run build && npm audit --audit-level=high
-
-# API workflow: idempotency, concurrency, pause/resume, delayed jobs,
-# transactional batches, DLQ, cron, and pagination
-python3 /tmp/e2e_test.py
 
 # controlled admission-load test (10 → 50 → 100 virtual users)
 k6 run bench/k6.js

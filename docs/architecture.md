@@ -40,7 +40,7 @@
 - Validation, pagination, filtering, structured errors `{error:{code,message}, request_id}`
 - Transactional job creation + outbox
 - Queue pause/resume, stats via aggregated counts
-- SSE broadcast channel for live updates
+- Scoped dashboard polling for live operational views
 - Spawns outbox relay + scheduler as background tasks (also runnable standalone)
 
 ### Outbox Relay

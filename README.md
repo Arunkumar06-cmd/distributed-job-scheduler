@@ -1,8 +1,8 @@
 # Distributed Job Scheduler
 
 <p align="center">
-  <strong>Reliable asynchronous job execution for multi-tenant applications.</strong><br />
-  Rust · PostgreSQL · NATS JetStream · React
+  <strong>A reliable, multi-tenant platform for executing asynchronous work.</strong><br />
+  Built with Rust, PostgreSQL, NATS JetStream, and React.
 </p>
 
 <p align="center">
@@ -13,133 +13,124 @@
   <img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT license" />
 </p>
 
-Production-inspired distributed job scheduling platform for reliable asynchronous work across multiple workers. PostgreSQL remains the source of truth; a transactional outbox and NATS JetStream provide durable delivery.
+This is a production-inspired scheduler for applications that need more than a
+background loop: durable handoff, bounded concurrency, retries, execution
+history, dead-letter handling, and safe recovery after worker failures.
 
-## Why this exists
+## The point of the project
 
-This project focuses on the difficult parts of a scheduler rather than a thin queue wrapper: atomic claims, lease fencing, bounded concurrency, durable handoff, retry policy, tenant isolation, and traceable execution history.
+| Durable handoff | Safe execution | Operational control |
+| --- | --- | --- |
+| A transactional outbox persists work before it reaches NATS. | Lease epochs fence stale workers from completing a reassigned job. | The dashboard exposes queues, workers, jobs, retries, logs, and the DLQ. |
 
-## Architecture at a glance
+```text
+Dashboard / REST API
+        │
+        ▼
+PostgreSQL ── transactional outbox ──► NATS JetStream ──► worker pool ──► external services
+  source of truth     durable handoff       redelivery       leases + idempotency
+        │
+        └── queues · jobs · executions · logs · retries · DLQ · schedules
+```
 
-![Distributed Job Scheduler architecture](docs/assets/distributed-job-scheduler-architecture.png)
+## What is included
 
-| Concern | Implementation |
+| Area | Capabilities |
 | --- | --- |
-| Duplicate execution | PostgreSQL claim transaction + `lease_epoch` fencing |
-| Worker crashes | Renewable leases, stale-work reclamation, JetStream redelivery |
-| Lost publish | Transactional outbox with relay lease recovery |
-| Queue overload | Capacity tokens and admission-time sliding-window rate limits |
-| Permanent failures | Retry history, DLQ, and explicit replay |
-| Multi-tenancy | Organization membership checks on operational and list APIs |
+| Tenancy | Users, organizations, projects, memberships, JWT authentication |
+| Queues | Priority, pause/resume, concurrency limits, retry defaults, rate limits, statistics |
+| Jobs | Immediate, delayed, scheduled, recurring, batch, manual retry, pagination, filtering |
+| Reliability | Atomic claims, capacity tokens, lease renewal, fencing, outbox relay, scheduler leader lock |
+| Operations | Worker heartbeats, execution attempts, structured logs, dead-letter replay, metrics |
+| Extensions | Workflow dependencies, queue admission control, unknown external-result state |
 
-## Stack
+## Run locally
 
-- **API**: Rust + Axum + Tokio (stateless, horizontally scalable)
-- **DB**: PostgreSQL 18 (ACID, row locks, SKIP LOCKED, advisory locks)
-- **Broker**: NATS JetStream 2.14 (durable streams, Ack/Nak/Progress, duplicate window)
-- **Workers**: Independent Rust processes (pull consumers, lease fencing)
-- **Frontend**: React 18 + Vite 6
-
-## Quick Start
+Prerequisites: Docker, Rust stable, and Node.js 22 or later.
 
 ```bash
-# infrastructure (recommended)
+# 1. Start PostgreSQL and NATS JetStream.
 docker compose up -d postgres nats
 
-# api (spawns outbox relay + scheduler)
-DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler NATS_URL=nats://127.0.0.1:4222 cargo run -p api
+# 2. Start the API. It starts the outbox relay and scheduler.
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler \
+NATS_URL=nats://127.0.0.1:4222 \
+cargo run -p api
 
-# worker (in another terminal)
-DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler NATS_URL=nats://127.0.0.1:4222 cargo run -p worker
+# 3. In another terminal, start a worker.
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler \
+NATS_URL=nats://127.0.0.1:4222 \
+cargo run -p worker
 
-# frontend
-cd frontend && npm ci && npm run dev  # http://localhost:3000 -> proxies to :8080
+# 4. In a third terminal, start the dashboard.
+cd frontend && npm ci && npm run dev
 ```
 
-Create the first user through the registration screen; it becomes the owner of
-the organization and project it creates.
+Open `http://localhost:3000`, register a user, create an organization and a
+project, then create a queue. The first created user owns the organization and
+project it creates.
 
-## Architecture
+## Reliability model
 
-```
-Browser -> LB -> API (stateless) -> PostgreSQL (truth) -> Outbox -> NATS JetStream -> Workers -> External Services
-                      |                         |                |-> Scheduler (advisory lock) -> Cron
-                      |                         -> DLQ, Executions, Logs
-```
+The system deliberately provides **at-least-once delivery**. External handlers
+must use `job_id` as their idempotency key; a distributed scheduler cannot make
+an arbitrary third-party side effect exactly once.
 
-**Invariants**
-1. Stale worker cannot complete (`lease_epoch` fencing)
-2. `RUNNING <= max_concurrency` (queue row `FOR UPDATE NOWAIT` serialization)
-3. Committed job eventually dispatched (transactional outbox)
-4. `RETRY_WAIT` not executable
-5. Cron occurrence exactly once (PK `scheduled_job_id, fire_time`)
-6. At-least-once delivery + idempotent handlers = effective exactly-once business effect
-
-See `docs/architecture.md` and `docs/er-diagram.md`.
-
-## API surface
-
-| Area | What it supports |
+| Failure mode | Protection |
 | --- | --- |
-| Identity and tenancy | Registration, organizations, projects, memberships |
-| Queue operations | Configuration, pause/resume, statistics, admission limits |
-| Jobs | Immediate, delayed, scheduled, recurring, batch, retry, filtering, pagination |
-| Operations | Workers, executions, structured logs, DLQ inspection and replay |
-| Health | Public `/health`; membership-scoped `/metrics` |
+| API commits but publish fails | The outbox relay retries the persisted event. |
+| Relay publishes then crashes | A lease-expired relay retries with the same `Nats-Msg-Id`. |
+| Worker crashes mid-job | Lease expiry and JetStream redelivery allow another worker to claim it. |
+| Stale worker finishes late | `lease_epoch` fencing rejects its completion update. |
+| Queue reaches capacity | An atomic capacity-token reservation prevents over-claiming. |
+| Retries are exhausted | The job is retained in the DLQ and can be deliberately replayed. |
 
-**Idempotency**: `Idempotency-Key` header or body field -> `UNIQUE(queue_id, idempotency_key)` -> `409 Conflict` on duplicate. NATS publish uses `Nats-Msg-Id = outbox.id` for broker dedup. Business handlers must be idempotent (`job_id` as external key).
-
-See the complete [API reference](docs/api.md) and machine-readable
-[OpenAPI document](docs/openapi.json).
-
-## Job Lifecycle
-
-```
-SCHEDULED -> QUEUED -> CLAIMED -> RUNNING -> COMPLETED
-                                            |-> RETRY_WAIT -> QUEUED (after next_retry_at)
-                                            |-> FAILED -> DLQ (max_attempts exceeded)
+```text
+SCHEDULED ──► QUEUED ──► CLAIMED ──► RUNNING ──► COMPLETED
+                                      │
+                                      ├──► RETRY_WAIT ──► QUEUED
+                                      └──► FAILED ──► DLQ
 ```
 
-Retry strategies: `fixed`, `linear`, `exponential` with capped delay.
-
-## Concurrency & Reliability
-
-- **Outbox**: `BEGIN; INSERT job; INSERT outbox; COMMIT` -> relay claims `FOR UPDATE SKIP LOCKED` with `relay_locked_until`, publishes outside TX, then `DELETE`. Lease expires -> reclaimed.
-- **Claim**: lock the queue with `FOR UPDATE NOWAIT`, check pause state, reserve a capacity token with `SKIP LOCKED`, and transition the job to `CLAIMED` in one transaction. Long work runs only after commit, with lease renewal and NATS `InProgress` acknowledgements.
-- **Complete**: `UPDATE jobs SET status=COMPLETED WHERE lease_epoch = $epoch AND lease_owner = $worker` -> `0 rows` means fenced.
-- **Scheduler**: `pg_try_advisory_lock(0x73636865)` leader election; cron dedup via `scheduled_occurrences` PK; timezone aware.
-- **Graceful shutdown**: `SIGTERM -> stop accepting -> wait grace (30s) -> mark worker Offline`.
-
-## Frontend
-
-Dashboard at `http://localhost:3000`:
-- Queue cards with health (queued/running/completed/failed/retry/DLQ), pause/resume, concurrency
-- Worker table with ONLINE/STALE/OFFLINE (15s/60s thresholds), heartbeat, running jobs
-- Job explorer with filters (status, queue, priority), pagination, retry, batch
-- Job detail: payload, executions, logs, retry schedule
-- Metrics: throughput, pool usage, NATS status
-- Polling-based refresh for jobs, queue health, and workers
-
-## Tests
+## Verification
 
 ```bash
+# Rust unit and PostgreSQL integration tests
 cargo test --workspace -- --test-threads=1
 cargo clippy --workspace --all-targets -- -D warnings
+
+# Frontend build and dependency audit
 cd frontend && npm ci && npm run build && npm audit --audit-level=high
 
-# controlled admission-load test (10 → 50 → 100 virtual users)
+# Controlled admission-load test (10 → 50 → 100 virtual users)
 k6 run bench/k6.js
 ```
 
-### Verified locally
+Latest local evidence:
 
-- 12/12 Rust tests pass against PostgreSQL 18, including cron deduplication, idempotency, queue-capacity contention, and lease fencing.
-- API lifecycle smoke test passes against PostgreSQL + NATS JetStream.
-- k6 admission-load run: 11,100 successful `202 Accepted` submissions at 219 jobs/s; p95 166 ms and p99 under 200 ms.
-- External-side-effect uncertainty is retained as `UNKNOWN_EXTERNAL_RESULT`; the scheduler never infers a payment outcome.
+- 12/12 Rust tests passed against PostgreSQL 18, including idempotency, cron
+  deduplication, capacity contention, and lease fencing.
+- The API lifecycle was exercised against PostgreSQL and NATS JetStream.
+- The controlled load run accepted 11,100 submissions at 219 jobs/s; p95 was
+  166 ms and p99 was below 200 ms on the local test environment.
 
-See [testing notes](docs/testing.md), [architecture](docs/architecture.md), and [design decisions](docs/design-decisions.md).
+These figures are development-environment evidence, not a production capacity
+guarantee. Production readiness still requires deployment-specific load, soak,
+failover, backup/restore, and external-side-effect testing.
 
-## Design Decisions
+## Documentation
 
-See `docs/design-decisions.md` for trade-offs (Postgres vs Redis, NATS vs Kafka, queue lock vs optimistic, at-least-once vs exactly-once, etc).
+| Document | Purpose |
+| --- | --- |
+| [Architecture](docs/architecture.md) | Components, message flow, failure recovery, deployment model |
+| [Data model](docs/er-diagram.md) | Rendered ER diagram, keys, relationships, and query indexes |
+| [API reference](docs/api.md) | REST routes, authorization, errors, and idempotency |
+| [OpenAPI](docs/openapi.json) | Machine-readable API surface |
+| [Testing](docs/testing.md) | Test layers, chaos scenarios, and evidence |
+| [Design decisions](docs/design-decisions.md) | Trade-offs and intentionally deferred work |
+| [Contributing](CONTRIBUTING.md) | Local development and contribution conventions |
+| [Security](SECURITY.md) | Vulnerability reporting policy |
+
+## License
+
+Released under the [MIT License](LICENSE).

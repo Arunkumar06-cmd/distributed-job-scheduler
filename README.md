@@ -19,6 +19,10 @@ Production-inspired distributed job scheduling platform for reliable asynchronou
 
 This project focuses on the difficult parts of a scheduler rather than a thin queue wrapper: atomic claims, lease fencing, bounded concurrency, durable handoff, retry policy, tenant isolation, and traceable execution history.
 
+## Architecture at a glance
+
+![Distributed Job Scheduler architecture](docs/assets/distributed-job-scheduler-architecture.png)
+
 | Concern | Implementation |
 | --- | --- |
 | Duplicate execution | PostgreSQL claim transaction + `lease_epoch` fencing |

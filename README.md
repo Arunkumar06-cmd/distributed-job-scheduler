@@ -32,15 +32,6 @@ This project focuses on the difficult parts of a scheduler rather than a thin qu
 | Permanent failures | Retry history, DLQ, and explicit replay |
 | Multi-tenancy | Organization membership checks on operational and list APIs |
 
-## Demo
-
-Use the [demo recording runbook](DEMO.md) to capture a repeatable walkthrough
-of queue configuration, execution, retry/DLQ handling, and dashboard
-inspection. A polished recording should be attached to the GitHub release or
-linked here once captured; this repository does not present a placeholder clip
-as product evidence.
-
-
 ## Stack
 
 - **API**: Rust + Axum + Tokio (stateless, horizontally scalable)

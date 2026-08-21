@@ -183,6 +183,10 @@ async fn heartbeat_loop(
 }
 
 fn stream_name_for_subject(subject: &str) -> String {
+    if subject == "org.*.proj.*.queue.*.>" {
+        return "JOBS_WILDCARD".to_string();
+    }
+
     // org.{org}.proj.{proj}.queue.{queue}.{tier} -> JOBS_{org}_{proj}_{queue}
     let parts: Vec<&str> = subject.split('.').collect();
     if parts.len() >= 6 && parts[0] == "org" && parts[2] == "proj" && parts[4] == "queue" {

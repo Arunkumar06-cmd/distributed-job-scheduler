@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "worker_status", rename_all = "UPPERCASE")]
+#[serde(rename_all = "UPPERCASE")]
 pub enum WorkerStatus {
     Online,
     Stale,

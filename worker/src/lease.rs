@@ -1,4 +1,3 @@
-use chrono::Utc;
 use std::time::Duration;
 use tokio::time::interval;
 use tracing::{debug, error, warn};

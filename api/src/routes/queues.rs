@@ -1,8 +1,9 @@
 use axum::{
-    Json, extract::{State, Path, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
+    Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
@@ -35,7 +36,8 @@ pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<CreateQueueReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
-    req.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    req.validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
     let proj = queries::get_project(&state.pool, req.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
@@ -68,15 +70,21 @@ pub async fn create(
     // Ensure NATS stream exists for this queue
     if let Some(nats) = &state.nats {
         let js = async_nats::jetstream::new(nats.clone());
-        let stream_name = format!("JOBS_{}_{}_{}", proj.org_id, req.project_id, q.id).replace('-', "_");
+        let stream_name =
+            format!("JOBS_{}_{}_{}", proj.org_id, req.project_id, q.id).replace('-', "_");
         // Use hierarchical subject: org.{org_id}.proj.{project_id}.queue.{queue_id}.*
-        let subject = format!("org.{}.proj.{}.queue.{}.*", proj.org_id, req.project_id, q.id);
-        let _ = js.create_stream(async_nats::jetstream::stream::Config {
-            name: stream_name,
-            subjects: vec![subject],
-            max_messages: 100_000,
-            ..Default::default()
-        }).await;
+        let subject = format!(
+            "org.{}.proj.{}.queue.{}.*",
+            proj.org_id, req.project_id, q.id
+        );
+        let _ = js
+            .create_stream(async_nats::jetstream::stream::Config {
+                name: stream_name,
+                subjects: vec![subject],
+                max_messages: 100_000,
+                ..Default::default()
+            })
+            .await;
     }
 
     Ok((StatusCode::CREATED, Json(serde_json::json!(q))))
@@ -205,5 +213,35 @@ pub async fn stats(
         return Err(AppError::Forbidden("forbidden".to_string()));
     }
     let stats = queries::queue_stats(&state.pool, queue_id).await?;
+    Ok(Json(serde_json::json!(stats)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BatchStatsQuery {
+    pub ids: String,
+}
+
+pub async fn batch_stats(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Query(q): Query<BatchStatsQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let queue_ids: Vec<Uuid> = q
+        .ids
+        .split(',')
+        .filter_map(|s| s.parse::<Uuid>().ok())
+        .collect();
+    if queue_ids.is_empty() {
+        return Ok(Json(serde_json::json!([])));
+    }
+    if queue_ids.len() > 100 {
+        return Err(AppError::Validation(
+            "at most 100 queue ids are allowed".to_string(),
+        ));
+    }
+    if !queries::user_can_access_all_queues(&state.pool, auth.user_id, &queue_ids).await? {
+        return Err(AppError::Forbidden("forbidden".to_string()));
+    }
+    let stats = queries::batch_queue_stats(&state.pool, &queue_ids).await?;
     Ok(Json(serde_json::json!(stats)))
 }

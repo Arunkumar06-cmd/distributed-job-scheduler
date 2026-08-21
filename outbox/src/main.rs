@@ -6,8 +6,14 @@ use common::Config;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with(tracing_subscriber::fmt::layer().json())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_level(true),
+        )
         .init();
 
     let config = Arc::new(Config::from_env());
@@ -20,7 +26,13 @@ async fn main() -> anyhow::Result<()> {
         tokio::signal::ctrl_c().await.ok();
         sd.cancel();
     });
-    let relay = outbox::relay::OutboxRelay::new(pool, publisher, format!("relay-{}", uuid::Uuid::new_v4()), &config, shutdown);
+    let relay = outbox::relay::OutboxRelay::new(
+        pool,
+        publisher,
+        format!("relay-{}", uuid::Uuid::new_v4()),
+        &config,
+        shutdown,
+    );
     relay.run().await;
     Ok(())
 }

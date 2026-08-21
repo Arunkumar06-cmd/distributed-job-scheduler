@@ -1,7 +1,7 @@
 use async_nats::jetstream;
-use async_nats::{HeaderValue, HeaderMap};
+use async_nats::HeaderMap;
 use bytes::Bytes;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use db::models::OutboxEvent;
 
@@ -21,14 +21,22 @@ impl Publisher {
         Ok(Self::new(client))
     }
 
-    pub async fn ensure_stream(&self, stream_name: &str, subject_filter: &str) -> anyhow::Result<()> {
+    pub async fn ensure_stream(
+        &self,
+        stream_name: &str,
+        subject_filter: &str,
+    ) -> anyhow::Result<()> {
         match self.js.get_stream(stream_name).await {
             Ok(_) => {
                 debug!(stream = stream_name, "stream exists");
                 Ok(())
             }
             Err(_) => {
-                info!(stream = stream_name, subject = subject_filter, "creating stream");
+                info!(
+                    stream = stream_name,
+                    subject = subject_filter,
+                    "creating stream"
+                );
                 self.js
                     .create_stream(jetstream::stream::Config {
                         name: stream_name.to_string(),

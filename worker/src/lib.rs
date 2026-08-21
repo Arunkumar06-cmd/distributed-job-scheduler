@@ -4,5 +4,5 @@ pub mod lease;
 pub mod supervisor;
 
 pub use consumer::WorkerConsumer;
-pub use handler::{HandlerRegistry, JobHandler, HandlerResult};
+pub use handler::{HandlerRegistry, HandlerResult, JobHandler};
 pub use supervisor::WorkerSupervisor;

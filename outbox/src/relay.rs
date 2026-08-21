@@ -4,7 +4,6 @@ use tracing::{debug, error, info, warn};
 
 use common::Config;
 use db::queries;
-use db::models::OutboxEvent;
 
 use crate::publisher::Publisher;
 
@@ -101,7 +100,9 @@ impl OutboxRelay {
 
         // Phase 3: clear successfully published rows (short transaction)
         if !published_ids.is_empty() {
-            if let Err(e) = queries::clear_outbox_events(&self.pool, &self.relay_id, &published_ids).await {
+            if let Err(e) =
+                queries::clear_outbox_events(&self.pool, &self.relay_id, &published_ids).await
+            {
                 error!(error = %e, "failed to clear outbox events (will be reclaimed after lease)");
             }
         }

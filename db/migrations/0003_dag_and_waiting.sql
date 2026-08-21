@@ -1,9 +1,4 @@
 -- 0003_dag_and_waiting.sql
--- Add WAITING status for DAG children
-DO $$ BEGIN
-    ALTER TYPE job_status ADD VALUE IF NOT EXISTS 'WAITING';
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
 -- Add workflow metadata
 CREATE TABLE IF NOT EXISTS workflows (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -14,6 +9,3 @@ CREATE TABLE IF NOT EXISTS workflows (
 );
 
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS workflow_id UUID REFERENCES workflows(id) ON DELETE SET NULL;
-
--- Ensure DAG waiting jobs have a way to be queued
-CREATE INDEX IF NOT EXISTS idx_jobs_waiting ON jobs(queue_id) WHERE status = 'WAITING';

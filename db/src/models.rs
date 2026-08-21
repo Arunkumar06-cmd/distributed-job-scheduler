@@ -238,5 +238,5 @@ pub struct WorkerView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<WorkerStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub running_jobs: Option<i32>,
+    pub running_jobs: Option<i64>,
 }

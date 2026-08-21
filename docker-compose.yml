@@ -1,0 +1,79 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: job_scheduler
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # PostgreSQL 18 stores cluster data under a versioned subdirectory.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data", "-p", "4222", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/job_scheduler
+      NATS_URL: nats://nats:4222
+      JWT_SECRET: dev-secret-change-in-production-please-32bytes
+      API_HOST: 0.0.0.0
+      API_PORT: 8080
+      API_POOL_SIZE: 10
+      SCHEDULER_POOL_SIZE: 5
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/job_scheduler
+      NATS_URL: nats://nats:4222
+      WORKER_POOL_SIZE: 20
+      WORKER_CONCURRENCY: 8
+      HEARTBEAT_INTERVAL_SECS: 5
+      LEASE_DURATION_SECS: 30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.scheduler
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/job_scheduler
+      NATS_URL: nats://nats:4222
+      SCHEDULER_POOL_SIZE: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+volumes:
+  pgdata:
+  natsdata:

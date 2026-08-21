@@ -1,8 +1,9 @@
 use axum::{
-    Json, extract::{State, Path, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
+    Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
@@ -26,9 +27,12 @@ pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<CreateProjectReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
-    req.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    req.validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
     if !queries::user_in_org(&state.pool, auth.user_id, req.org_id).await? {
-        return Err(AppError::Forbidden("not a member of this organization".to_string()));
+        return Err(AppError::Forbidden(
+            "not a member of this organization".to_string(),
+        ));
     }
     let proj = queries::create_project(
         &state.pool,

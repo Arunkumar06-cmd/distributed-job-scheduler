@@ -1,15 +1,13 @@
+use chrono::Utc;
+use chrono_tz::Tz;
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::{TimeZone, Utc};
-use chrono_tz::Tz;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 use common::Config;
-use db::queries;
 use db::models::ScheduledJob;
-
-use crate::leader::SchedulerLeader;
+use db::queries;
 
 /// The scheduler runner: promotes scheduled jobs, requeues retries,
 /// and fires cron occurrences — all behind an advisory lock.
@@ -20,23 +18,19 @@ pub struct SchedulerRunner {
 }
 
 impl SchedulerRunner {
-    pub fn new(pool: sqlx::PgPool, config: Arc<Config>, shutdown: tokio_util::sync::CancellationToken) -> Self {
-        Self { pool, config, shutdown }
+    pub fn new(
+        pool: sqlx::PgPool,
+        config: Arc<Config>,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        Self {
+            pool,
+            config,
+            shutdown,
+        }
     }
 
     pub async fn run(self) {
-        let pool = self.pool.clone();
-        let poll = self.config.scheduler_poll_interval_secs;
-        let shutdown = self.shutdown.clone();
-
-        let leader = SchedulerLeader::new(pool, poll, shutdown, move || {
-            // This closure runs synchronously inside the leader loop.
-            // We can't await here directly, so we use a blocking approach via
-            // a tokio runtime handle. Instead, we restructure to use an async work fn.
-        });
-
-        // The above approach won't work because the work needs to be async.
-        // Let's use a simpler approach: the leader loop is inline here.
         self.leader_loop().await;
     }
 
@@ -48,32 +42,63 @@ impl SchedulerRunner {
                 break;
             }
 
-            // Session-level advisory lock for leader (held while leader), with lock_timeout 5s per 2026 best practice
-            let _ = sqlx::query("SET lock_timeout = '5s'").execute(&self.pool).await;
-            let got_lock = match queries::try_advisory_lock(&self.pool, 0x73636865).await {
+            // Advisory locks are session-scoped. Keep this acquired connection alive for
+            // the entire leadership term; using PgPool directly could switch sessions.
+            let mut leader_connection = match self.pool.acquire().await {
+                Ok(connection) => connection,
+                Err(e) => {
+                    error!(error = %e, "failed to acquire scheduler leader connection");
+                    sleep(Duration::from_secs(
+                        self.config.scheduler_poll_interval_secs,
+                    ))
+                    .await;
+                    continue;
+                }
+            };
+            let got_lock: bool = match sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+                .bind(0x73636865_i64)
+                .fetch_one(&mut *leader_connection)
+                .await
+            {
                 Ok(b) => b,
                 Err(e) => {
                     error!(error = %e, "advisory lock attempt failed");
-                    sleep(Duration::from_secs(self.config.scheduler_poll_interval_secs)).await;
+                    sleep(Duration::from_secs(
+                        self.config.scheduler_poll_interval_secs,
+                    ))
+                    .await;
                     continue;
                 }
             };
 
             if !got_lock {
                 debug!("not the scheduler leader; sleeping");
-                sleep(Duration::from_secs(self.config.scheduler_poll_interval_secs)).await;
+                sleep(Duration::from_secs(
+                    self.config.scheduler_poll_interval_secs,
+                ))
+                .await;
                 continue;
             }
+
+            let _ = sqlx::query("SET lock_timeout = '5s'")
+                .execute(&mut *leader_connection)
+                .await;
 
             info!("acquired scheduler leader lock");
             while !self.shutdown.is_cancelled() {
                 if let Err(e) = self.tick().await {
                     error!(error = %e, "scheduler tick failed");
                 }
-                sleep(Duration::from_secs(self.config.scheduler_poll_interval_secs)).await;
+                sleep(Duration::from_secs(
+                    self.config.scheduler_poll_interval_secs,
+                ))
+                .await;
             }
 
-            let _ = queries::advisory_unlock(&self.pool, 0x73636865).await;
+            let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(0x73636865_i64)
+                .execute(&mut *leader_connection)
+                .await;
             info!("released scheduler leader lock");
         }
     }
@@ -89,11 +114,9 @@ impl SchedulerRunner {
         if backfilled > 0 {
             info!(backfilled, "backfilled outbox for queued jobs");
         }
-        // 0b. Reconcile UNKNOWN_EXTERNAL_RESULT (spec §25) - mock external check, 50% success
-        let reconciled = queries::reconcile_unknown_jobs(&self.pool).await?;
-        if reconciled > 0 {
-            info!(reconciled, "reconciled UNKNOWN jobs");
-        }
+        // UNKNOWN_EXTERNAL_RESULT jobs deliberately remain fenced from automatic
+        // state changes until a real, idempotent downstream reconciliation is
+        // configured. Guessing an external outcome is unsafe.
         // 1. Promote SCHEDULED -> QUEUED (one-shot future jobs)
         let promoted = queries::promote_scheduled_jobs(&self.pool).await?;
         if promoted > 0 {
@@ -135,7 +158,11 @@ impl SchedulerRunner {
         let subject = common::ids::nats_subject(&org_id, &project_id, &queue_id, sj.priority);
 
         // Create the occurrence (dedup via PK on scheduled_occurrences)
-        match queries::create_cron_occurrence(&self.pool, sj, fire_time, org_id, project_id, subject).await? {
+        match queries::create_cron_occurrence(
+            &self.pool, sj, fire_time, org_id, project_id, subject,
+        )
+        .await?
+        {
             Some(job) => {
                 info!(scheduled_job_id = %sj.id, job_id = %job.id, fire_time = %fire_time, "fired cron occurrence");
             }

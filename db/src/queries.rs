@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use common::AppResult;
-use domain::{ExecutionStatus, JobKind, JobStatus, RetryStrategy};
+use common::{AppError, AppResult};
+use domain::{JobKind, JobStatus, RetryStrategy};
 
 use crate::models::*;
 
@@ -30,10 +30,11 @@ pub async fn create_user(
 }
 
 pub async fn find_user_by_email(pool: &PgPool, email: &str) -> AppResult<Option<User>> {
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1 AND is_active = TRUE")
-        .bind(email)
-        .fetch_optional(pool)
-        .await?;
+    let user =
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1 AND is_active = TRUE")
+            .bind(email)
+            .fetch_optional(pool)
+            .await?;
     Ok(user)
 }
 
@@ -77,7 +78,10 @@ pub async fn create_organization(
     Ok(org)
 }
 
-pub async fn list_organizations_for_user(pool: &PgPool, user_id: Uuid) -> AppResult<Vec<Organization>> {
+pub async fn list_organizations_for_user(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> AppResult<Vec<Organization>> {
     let orgs = sqlx::query_as::<_, Organization>(
         r#"SELECT o.* FROM organizations o
            JOIN org_memberships m ON m.org_id = o.id
@@ -113,7 +117,9 @@ pub async fn require_org_admin(pool: &PgPool, user_id: Uuid, org_id: Uuid) -> Ap
     .await?;
     match row {
         Some((role,)) if role == "owner" || role == "admin" => Ok(()),
-        Some(_) => Err(common::AppError::Forbidden("requires org admin/owner".to_string())),
+        Some(_) => Err(common::AppError::Forbidden(
+            "requires org admin/owner".to_string(),
+        )),
         None => Err(common::AppError::Forbidden("not in org".to_string())),
     }
 }
@@ -188,6 +194,7 @@ pub async fn user_in_project(pool: &PgPool, user_id: Uuid, project_id: Uuid) -> 
 // =========================================================
 // QUEUES
 // =========================================================
+#[allow(clippy::too_many_arguments)]
 pub async fn create_queue(
     pool: &PgPool,
     project_id: Uuid,
@@ -237,13 +244,12 @@ pub async fn get_queue(pool: &PgPool, queue_id: Uuid) -> AppResult<Option<Queue>
 }
 
 pub async fn set_queue_paused(pool: &PgPool, queue_id: Uuid, paused: bool) -> AppResult<Queue> {
-    let q = sqlx::query_as::<_, Queue>(
-        "UPDATE queues SET is_paused = $2 WHERE id = $1 RETURNING *",
-    )
-    .bind(queue_id)
-    .bind(paused)
-    .fetch_one(pool)
-    .await?;
+    let q =
+        sqlx::query_as::<_, Queue>("UPDATE queues SET is_paused = $2 WHERE id = $1 RETURNING *")
+            .bind(queue_id)
+            .bind(paused)
+            .fetch_one(pool)
+            .await?;
     Ok(q)
 }
 
@@ -296,6 +302,52 @@ pub async fn queue_stats(pool: &PgPool, queue_id: Uuid) -> AppResult<QueueStats>
     Ok(stats)
 }
 
+pub async fn batch_queue_stats(pool: &PgPool, queue_ids: &[Uuid]) -> AppResult<Vec<QueueStats>> {
+    if queue_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let stats = sqlx::query_as::<_, QueueStats>(
+        r#"SELECT
+              queue_id,
+              COALESCE(SUM(CASE WHEN status = 'QUEUED' THEN 1 ELSE 0 END), 0) AS queued,
+              COALESCE(SUM(CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END), 0) AS running,
+              COALESCE(SUM(CASE WHEN status = 'RETRY_WAIT' THEN 1 ELSE 0 END), 0) AS retry_wait,
+              COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0) AS completed,
+              COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed,
+              COALESCE(SUM(CASE WHEN status = 'SCHEDULED' THEN 1 ELSE 0 END), 0) AS scheduled,
+              COALESCE(SUM(CASE WHEN status = 'CLAIMED' THEN 1 ELSE 0 END), 0) AS claimed,
+              0 AS dlq
+            FROM jobs WHERE queue_id = ANY($1)
+            GROUP BY queue_id"#,
+    )
+    .bind(queue_ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(stats)
+}
+
+pub async fn user_can_access_all_queues(
+    pool: &PgPool,
+    user_id: Uuid,
+    queue_ids: &[Uuid],
+) -> AppResult<bool> {
+    if queue_ids.is_empty() {
+        return Ok(true);
+    }
+    let visible: (i64,) = sqlx::query_as(
+        r#"SELECT COUNT(DISTINCT q.id)
+           FROM queues q
+           JOIN projects p ON p.id = q.project_id
+           JOIN org_memberships m ON m.org_id = p.org_id
+           WHERE m.user_id = $1 AND q.id = ANY($2)"#,
+    )
+    .bind(user_id)
+    .bind(queue_ids)
+    .fetch_one(pool)
+    .await?;
+    Ok(visible.0 == queue_ids.len() as i64)
+}
+
 // =========================================================
 // JOBS — creation (with outbox in same transaction)
 // =========================================================
@@ -319,6 +371,41 @@ pub struct CreateJobParams {
 
 pub async fn create_job_with_outbox(pool: &PgPool, p: CreateJobParams) -> AppResult<Job> {
     let mut tx = pool.begin().await?;
+    enforce_queue_rate_limit(&mut tx, p.queue_id, 1).await?;
+    let job = insert_job_with_outbox(&mut tx, &p).await?;
+    tx.commit().await?;
+    Ok(job)
+}
+
+async fn enforce_queue_rate_limit(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    queue_id: Uuid,
+    requested_jobs: i64,
+) -> AppResult<()> {
+    let queue: (Option<i32>, i32) =
+        sqlx::query_as("SELECT rate_limit, rate_window_secs FROM queues WHERE id = $1 FOR UPDATE")
+            .bind(queue_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    if let Some(limit) = queue.0 {
+        let created: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE queue_id = $1 AND created_at >= NOW() - make_interval(secs => $2)",
+        )
+        .bind(queue_id)
+        .bind(queue.1)
+        .fetch_one(&mut **tx)
+        .await?;
+        if created.0 + requested_jobs > limit as i64 {
+            return Err(AppError::Validation(format!(
+                "queue rate limit of {limit} jobs per {} seconds exceeded",
+                queue.1
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn insert_job_with_outbox(conn: &mut PgConnection, p: &CreateJobParams) -> AppResult<Job> {
     let status = if p.scheduled_for.is_some() {
         JobStatus::Scheduled
     } else {
@@ -345,7 +432,7 @@ pub async fn create_job_with_outbox(pool: &PgPool, p: CreateJobParams) -> AppRes
     .bind(p.max_delay_secs)
     .bind(p.scheduled_for)
     .bind(&p.idempotency_key)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
 
     // Only create outbox event for immediately-dispatchable jobs
@@ -365,11 +452,9 @@ pub async fn create_job_with_outbox(pool: &PgPool, p: CreateJobParams) -> AppRes
         .bind(&p.payload)
         .bind(p.priority)
         .bind(event_id.to_string())
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     }
-
-    tx.commit().await?;
     Ok(job)
 }
 
@@ -381,6 +466,7 @@ pub async fn get_job(pool: &PgPool, job_id: Uuid) -> AppResult<Option<Job>> {
     Ok(j)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn list_jobs(
     pool: &PgPool,
     queue_id: Option<Uuid>,
@@ -430,6 +516,65 @@ pub async fn count_jobs(
     Ok(row.0)
 }
 
+/// List jobs visible to a user. Cross-queue views must be membership-scoped,
+/// otherwise an omitted queue filter would expose every organization's jobs.
+#[allow(clippy::too_many_arguments)]
+pub async fn list_jobs_for_user(
+    pool: &PgPool,
+    user_id: Uuid,
+    queue_id: Option<Uuid>,
+    status: Option<JobStatus>,
+    priority_min: Option<i32>,
+    batch_id: Option<Uuid>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<Job>> {
+    let jobs = sqlx::query_as::<_, Job>(
+        r#"SELECT j.* FROM jobs j
+           JOIN queues q ON q.id = j.queue_id
+           JOIN projects p ON p.id = q.project_id
+           JOIN org_memberships m ON m.org_id = p.org_id AND m.user_id = $1
+           WHERE ($2::uuid IS NULL OR j.queue_id = $2)
+             AND ($3::job_status IS NULL OR j.status = $3)
+             AND ($4::int IS NULL OR j.priority >= $4)
+             AND ($5::uuid IS NULL OR j.batch_id = $5)
+           ORDER BY j.created_at DESC
+           LIMIT $6 OFFSET $7"#,
+    )
+    .bind(user_id)
+    .bind(queue_id)
+    .bind(status)
+    .bind(priority_min)
+    .bind(batch_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+    Ok(jobs)
+}
+
+pub async fn count_jobs_for_user(
+    pool: &PgPool,
+    user_id: Uuid,
+    queue_id: Option<Uuid>,
+    status: Option<JobStatus>,
+) -> AppResult<i64> {
+    let row: (i64,) = sqlx::query_as(
+        r#"SELECT COUNT(*) FROM jobs j
+           JOIN queues q ON q.id = j.queue_id
+           JOIN projects p ON p.id = q.project_id
+           JOIN org_memberships m ON m.org_id = p.org_id AND m.user_id = $1
+           WHERE ($2::uuid IS NULL OR j.queue_id = $2)
+             AND ($3::job_status IS NULL OR j.status = $3)"#,
+    )
+    .bind(user_id)
+    .bind(queue_id)
+    .bind(status)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
 // =========================================================
 // WORKER REGISTRATION + HEARTBEAT
 // =========================================================
@@ -468,12 +613,10 @@ pub async fn heartbeat(
     processed_total: i64,
     failed_total: i64,
 ) -> AppResult<()> {
-    sqlx::query(
-        r#"UPDATE workers SET last_heartbeat_at = NOW(), is_active = TRUE WHERE id = $1"#,
-    )
-    .bind(worker_id)
-    .execute(pool)
-    .await?;
+    sqlx::query(r#"UPDATE workers SET last_heartbeat_at = NOW(), is_active = TRUE WHERE id = $1"#)
+        .bind(worker_id)
+        .execute(pool)
+        .await?;
     sqlx::query(
         r#"INSERT INTO worker_heartbeats (worker_id, running_jobs, processed_total, failed_total)
            VALUES ($1, $2, $3, $4)"#,
@@ -488,12 +631,10 @@ pub async fn heartbeat(
 }
 
 pub async fn mark_worker_stopped(pool: &PgPool, worker_id: Uuid) -> AppResult<()> {
-    sqlx::query(
-        r#"UPDATE workers SET is_active = FALSE, stopped_at = NOW() WHERE id = $1"#,
-    )
-    .bind(worker_id)
-    .execute(pool)
-    .await?;
+    sqlx::query(r#"UPDATE workers SET is_active = FALSE, stopped_at = NOW() WHERE id = $1"#)
+        .bind(worker_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -591,11 +732,14 @@ async fn claim_job_inner(
     lease_duration_secs: i64,
 ) -> AppResult<ClaimedJob> {
     let mut tx = pool.begin().await?;
-    let _ = sqlx::query("SET lock_timeout = '5s'").execute(&mut *tx).await;
+    let _ = sqlx::query("SET lock_timeout = '5s'")
+        .execute(&mut *tx)
+        .await;
 
-    // 1. Lock queue row to check pause + rate limit (spec §13: QUEUE -> TOKEN -> JOB)
-    let queue_row: Option<(Uuid, bool, Option<i32>)> = sqlx::query_as(
-        r#"SELECT q.id, q.is_paused, q.rate_limit
+    // 1. Lock queue row to check pause (spec §13: QUEUE -> TOKEN -> JOB).
+    // Admission rate limiting is enforced when the job is created, not here.
+    let queue_row: Option<(Uuid, bool)> = sqlx::query_as(
+        r#"SELECT q.id, q.is_paused
            FROM jobs j
            JOIN queues q ON q.id = j.queue_id
            WHERE j.id = $1
@@ -605,38 +749,12 @@ async fn claim_job_inner(
     .fetch_optional(&mut *tx)
     .await?;
 
-    let (queue_id, is_paused, rate_limit) = queue_row.ok_or_else(|| {
-        common::AppError::NotFound(format!("job {job_id} not found"))
-    })?;
+    let (queue_id, is_paused) =
+        queue_row.ok_or_else(|| common::AppError::NotFound(format!("job {job_id} not found")))?;
 
     if is_paused {
         tx.rollback().await.ok();
         return Err(common::AppError::QueuePaused);
-    }
-
-    // 1b. Rate limiting (bonus §2): token bucket per queue
-    if let Some(limit) = rate_limit {
-        // Simple sliding window: count jobs created in last 60s
-        let recent: (i64,) = sqlx::query_as(
-            r#"SELECT COUNT(*) FROM jobs WHERE queue_id = $1 AND created_at > NOW() - INTERVAL '60 seconds'"#,
-        )
-        .bind(queue_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if recent.0 >= limit as i64 {
-            tx.rollback().await.ok();
-            return Err(common::AppError::Validation(format!("queue rate limit {limit}/min exceeded")));
-        }
-        // Also try queue_rate_buckets refill (for future)
-        let _ = sqlx::query(
-            r#"INSERT INTO queue_rate_buckets (queue_id, tokens, last_refill_at)
-               VALUES ($1, $2, NOW())
-               ON CONFLICT (queue_id) DO UPDATE SET last_refill_at = NOW()"#,
-        )
-        .bind(queue_id)
-        .bind(limit)
-        .execute(&mut *tx)
-        .await;
     }
 
     // 2. Claim capacity token via SKIP LOCKED (global concurrency, spec §7)
@@ -650,9 +768,7 @@ async fn claim_job_inner(
     .fetch_optional(&mut *tx)
     .await?;
 
-    let (token_id,) = token.ok_or_else(|| {
-        common::AppError::QueueAtCapacity
-    })?;
+    let (token_id,) = token.ok_or_else(|| common::AppError::QueueAtCapacity)?;
 
     // 2b. Assign token to worker/job
     sqlx::query(
@@ -692,7 +808,9 @@ async fn claim_job_inner(
     .await?;
 
     let job = claimed.ok_or_else(|| {
-        common::AppError::Conflict(format!("job {job_id} not claimable (already claimed or not queued)"))
+        common::AppError::Conflict(format!(
+            "job {job_id} not claimable (already claimed or not queued)"
+        ))
     })?;
 
     // 4. Create execution record
@@ -733,8 +851,22 @@ pub async fn renew_lease(
 ) -> AppResult<bool> {
     let expires = Utc::now() + chrono::Duration::seconds(lease_duration_secs);
     let result = sqlx::query(
-        r#"UPDATE jobs SET lease_expires_at = $4
-           WHERE id = $1 AND lease_owner = $2 AND lease_epoch = $3 AND status = 'RUNNING'"#,
+        r#"WITH renewed_job AS (
+             UPDATE jobs SET lease_expires_at = $4
+             WHERE id = $1
+               AND lease_owner = $2
+               AND lease_epoch = $3
+               AND status = 'RUNNING'::job_status
+               AND token_id IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM capacity_tokens ct
+                   WHERE ct.id = jobs.token_id AND ct.job_id = $1 AND ct.worker_id = $2
+               )
+             RETURNING token_id
+           )
+           UPDATE capacity_tokens ct SET lease_until = $4
+           FROM renewed_job r
+           WHERE ct.id = r.token_id AND ct.job_id = $1 AND ct.worker_id = $2"#,
     )
     .bind(job_id)
     .bind(worker_id)
@@ -787,7 +919,7 @@ pub async fn complete_job(
 
     // DAG resolver (bonus §1, spec §27-28): satisfy edges where this job is parent
     // Insert edge_satisfaction for each child, and if all parents of child are satisfied, queue child
-    let children: Vec<(Uuid,)> = sqlx::query_as(
+    let _children: Vec<(Uuid,)> = sqlx::query_as(
         r#"INSERT INTO edge_satisfaction (parent_id, child_id)
            SELECT $1, child_id FROM workflow_edges WHERE parent_id = $1
            ON CONFLICT DO NOTHING
@@ -796,53 +928,54 @@ pub async fn complete_job(
     .bind(job_id)
     .fetch_all(&mut *tx)
     .await?;
-    for (child_id,) in children {
-        let total: (i64,) = sqlx::query_as(r#"SELECT COUNT(*) FROM workflow_edges WHERE child_id = $1"#)
-            .bind(child_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        let done: (i64,) = sqlx::query_as(r#"SELECT COUNT(*) FROM edge_satisfaction WHERE child_id = $1"#)
-            .bind(child_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        if total.0 == done.0 {
-            let queued: Option<Job> = sqlx::query_as::<_, Job>(
-                r#"UPDATE jobs SET status = 'QUEUED'::job_status, queued_at = NOW(), updated_at = NOW()
-                   WHERE id = $1 AND status = 'WAITING'::job_status
-                   RETURNING *"#,
+
+    // Batch check: find children where all parents are now satisfied (single query instead of O(n) per child)
+    let ready_children: Vec<Job> = sqlx::query_as::<_, Job>(
+        r#"UPDATE jobs SET status = 'QUEUED'::job_status, queued_at = NOW(), updated_at = NOW()
+           WHERE id IN (
+               SELECT we.child_id FROM edge_satisfaction es
+               JOIN workflow_edges we ON we.child_id = es.child_id
+               GROUP BY we.child_id
+               HAVING COUNT(DISTINCT es.parent_id) = (SELECT COUNT(*) FROM workflow_edges we2 WHERE we2.child_id = we.child_id)
+           ) AND status = 'WAITING'::job_status
+           RETURNING *"#,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    for j in ready_children {
+        // Create outbox for newly ready child
+        let ctx: Option<(Uuid, Uuid)> = sqlx::query_as(
+            r#"SELECT p.org_id, p.id FROM queues q JOIN projects p ON p.id = q.project_id WHERE q.id = $1"#,
+        )
+        .bind(j.queue_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((org_id, proj_id)) = ctx {
+            let tier = if j.priority >= 10 {
+                "high"
+            } else if j.priority > 0 {
+                "standard"
+            } else {
+                "low"
+            };
+            let subject = format!("org.{org_id}.proj.{proj_id}.queue.{}.{}", j.queue_id, tier);
+            let eid = Uuid::new_v4();
+            sqlx::query(
+                r#"INSERT INTO outbox_events (id, job_id, queue_id, org_id, project_id, subject, payload, priority, nats_msg_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
             )
-            .bind(child_id)
-            .fetch_optional(&mut *tx)
+            .bind(eid)
+            .bind(j.id)
+            .bind(j.queue_id)
+            .bind(org_id)
+            .bind(proj_id)
+            .bind(&subject)
+            .bind(&j.payload)
+            .bind(j.priority)
+            .bind(eid.to_string())
+            .execute(&mut *tx)
             .await?;
-            if let Some(j) = queued {
-                // Create outbox for newly ready child
-                let ctx: Option<(Uuid, Uuid)> = sqlx::query_as(
-                    r#"SELECT p.org_id, p.id FROM queues q JOIN projects p ON p.id = q.project_id WHERE q.id = $1"#,
-                )
-                .bind(j.queue_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-                if let Some((org_id, proj_id)) = ctx {
-                    let tier = if j.priority >= 10 { "high" } else if j.priority > 0 { "standard" } else { "low" };
-                    let subject = format!("org.{org_id}.proj.{proj_id}.queue.{}.{}", j.queue_id, tier);
-                    let eid = Uuid::new_v4();
-                    sqlx::query(
-                        r#"INSERT INTO outbox_events (id, job_id, queue_id, org_id, project_id, subject, payload, priority, nats_msg_id)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
-                    )
-                    .bind(eid)
-                    .bind(j.id)
-                    .bind(j.queue_id)
-                    .bind(org_id)
-                    .bind(proj_id)
-                    .bind(&subject)
-                    .bind(&j.payload)
-                    .bind(j.priority)
-                    .bind(eid.to_string())
-                    .execute(&mut *tx)
-                    .await?;
-                }
-            }
         }
     }
 
@@ -867,6 +1000,7 @@ pub async fn complete_job(
 // =========================================================
 // FAIL A JOB -> retry or DLQ
 // =========================================================
+#[allow(clippy::too_many_arguments)]
 pub async fn fail_job(
     pool: &PgPool,
     job_id: Uuid,
@@ -947,7 +1081,10 @@ pub async fn fail_job(
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(FailOutcome::Retry { next_retry_at, delay_secs: delay })
+        Ok(FailOutcome::Retry {
+            next_retry_at,
+            delay_secs: delay,
+        })
     } else {
         // FAILED + DLQ
         sqlx::query(
@@ -994,7 +1131,10 @@ pub async fn fail_job(
 
 #[derive(Debug, Clone)]
 pub enum FailOutcome {
-    Retry { next_retry_at: DateTime<Utc>, delay_secs: i64 },
+    Retry {
+        next_retry_at: DateTime<Utc>,
+        delay_secs: i64,
+    },
     DeadLettered,
 }
 
@@ -1124,50 +1264,10 @@ pub async fn backfill_queued_outbox(pool: &PgPool) -> AppResult<i64> {
 }
 
 pub async fn reconcile_unknown_jobs(pool: &PgPool) -> AppResult<i64> {
-    // Real reconciler per spec §25: external GET /payments/{job_id} -> SUCCESS->COMPLETED, FAILURE->RETRY_WAIT, UNKNOWN->keep
-    // Mock: payload.should_succeed boolean or id hash even->success (50%)
-    let result = sqlx::query(
-        r#"WITH reconciled AS (
-             UPDATE jobs SET
-               status = CASE
-                 WHEN (payload->>'should_succeed')::boolean IS TRUE THEN 'COMPLETED'::job_status
-                 WHEN (payload->>'should_succeed')::boolean IS FALSE THEN 'RETRY_WAIT'::job_status
-                 WHEN substr(id::text, 1, 1) IN ('0','2','4','6','8','a','c','e') THEN 'COMPLETED'::job_status
-                 ELSE 'RETRY_WAIT'::job_status
-               END,
-               completed_at = CASE
-                 WHEN (payload->>'should_succeed')::boolean IS TRUE OR substr(id::text, 1, 1) IN ('0','2','4','6','8','a','c','e') THEN NOW()
-                 ELSE NULL END,
-               next_retry_at = CASE
-                 WHEN (payload->>'should_succeed')::boolean IS FALSE OR substr(id::text, 1, 1) IN ('1','3','5','7','9','b','d','f') THEN NOW() + INTERVAL '5 seconds'
-                 ELSE NULL END,
-               queued_at = CASE
-                 WHEN (payload->>'should_succeed')::boolean IS FALSE OR substr(id::text, 1, 1) IN ('1','3','5','7','9','b','d','f') THEN NOW()
-                 ELSE NULL END,
-               updated_at = NOW(),
-               error_message = CASE WHEN status='UNKNOWN_EXTERNAL_RESULT' THEN NULL ELSE error_message END,
-               error_kind = CASE WHEN status='UNKNOWN_EXTERNAL_RESULT' THEN NULL ELSE error_kind END
-             WHERE status='UNKNOWN_EXTERNAL_RESULT'::job_status
-               AND updated_at < NOW() - INTERVAL '30 seconds'
-             RETURNING id, queue_id, payload, priority, status
-           ),
-           upd_exec AS (
-             UPDATE job_executions SET status='COMPLETED'::execution_status, finished_at=NOW()
-             WHERE job_id IN (SELECT id FROM reconciled WHERE status='COMPLETED'::job_status) AND status='ABANDONED'::execution_status
-             RETURNING 1
-           )
-           INSERT INTO outbox_events (id, job_id, queue_id, org_id, project_id, subject, payload, priority, nats_msg_id)
-           SELECT gen_random_uuid(), r.id, r.queue_id, p.org_id, p.id,
-                  'org.'||p.org_id||'.proj.'||p.id||'.queue.'||r.queue_id||'.'||CASE WHEN r.priority >= 10 THEN 'high' WHEN r.priority > 0 THEN 'standard' ELSE 'low' END,
-                  r.payload, r.priority, gen_random_uuid()::text
-           FROM reconciled r
-           JOIN queues q ON q.id=r.queue_id
-           JOIN projects p ON p.id=q.project_id
-           WHERE r.status='RETRY_WAIT'::job_status"#,
-    )
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() as i64)
+    // External outcomes must be established by a real, idempotent downstream
+    // lookup. Never infer them from job payloads or random identifiers.
+    let _ = pool;
+    Ok(0)
 }
 
 // =========================================================
@@ -1305,6 +1405,7 @@ pub async fn mark_outbox_published(
 // =========================================================
 // SCHEDULED JOBS (cron)
 // =========================================================
+#[allow(clippy::too_many_arguments)]
 pub async fn create_scheduled_job(
     pool: &PgPool,
     queue_id: Uuid,
@@ -1337,12 +1438,35 @@ pub async fn create_scheduled_job(
     Ok(sj)
 }
 
-pub async fn list_scheduled_jobs(pool: &PgPool, queue_id: Option<Uuid>) -> AppResult<Vec<ScheduledJob>> {
+pub async fn list_scheduled_jobs(
+    pool: &PgPool,
+    queue_id: Option<Uuid>,
+) -> AppResult<Vec<ScheduledJob>> {
     let rows = sqlx::query_as::<_, ScheduledJob>(
         r#"SELECT * FROM scheduled_jobs
            WHERE ($1::uuid IS NULL OR queue_id = $1)
            ORDER BY created_at DESC"#,
     )
+    .bind(queue_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn list_scheduled_jobs_for_user(
+    pool: &PgPool,
+    user_id: Uuid,
+    queue_id: Option<Uuid>,
+) -> AppResult<Vec<ScheduledJob>> {
+    let rows = sqlx::query_as::<_, ScheduledJob>(
+        r#"SELECT sj.* FROM scheduled_jobs sj
+           JOIN queues q ON q.id = sj.queue_id
+           JOIN projects p ON p.id = q.project_id
+           JOIN org_memberships m ON m.org_id = p.org_id AND m.user_id = $1
+           WHERE ($2::uuid IS NULL OR sj.queue_id = $2)
+           ORDER BY sj.created_at DESC"#,
+    )
+    .bind(user_id)
     .bind(queue_id)
     .fetch_all(pool)
     .await?;
@@ -1443,13 +1567,11 @@ pub async fn create_cron_occurrence(
     .await?;
 
     // Update scheduled job's last/next fire
-    sqlx::query(
-        r#"UPDATE scheduled_jobs SET last_fired_at = $2 WHERE id = $1"#,
-    )
-    .bind(scheduled_job.id)
-    .bind(fire_time)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query(r#"UPDATE scheduled_jobs SET last_fired_at = $2 WHERE id = $1"#)
+        .bind(scheduled_job.id)
+        .bind(fire_time)
+        .execute(&mut *tx)
+        .await?;
 
     tx.commit().await?;
     Ok(Some(job))
@@ -1460,13 +1582,11 @@ pub async fn update_scheduled_next_fire(
     scheduled_job_id: Uuid,
     next_fire_at: Option<DateTime<Utc>>,
 ) -> AppResult<()> {
-    sqlx::query(
-        r#"UPDATE scheduled_jobs SET next_fire_at = $2 WHERE id = $1"#,
-    )
-    .bind(scheduled_job_id)
-    .bind(next_fire_at)
-    .execute(pool)
-    .await?;
+    sqlx::query(r#"UPDATE scheduled_jobs SET next_fire_at = $2 WHERE id = $1"#)
+        .bind(scheduled_job_id)
+        .bind(next_fire_at)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -1493,6 +1613,31 @@ pub async fn list_dlq_entries(
            ORDER BY moved_at DESC
            LIMIT $2 OFFSET $3"#,
     )
+    .bind(queue_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn list_dlq_entries_for_user(
+    pool: &PgPool,
+    user_id: Uuid,
+    queue_id: Option<Uuid>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<DeadLetterEntry>> {
+    let rows = sqlx::query_as::<_, DeadLetterEntry>(
+        r#"SELECT d.* FROM dead_letter_entries d
+           JOIN queues q ON q.id = d.queue_id
+           JOIN projects p ON p.id = q.project_id
+           JOIN org_memberships m ON m.org_id = p.org_id AND m.user_id = $1
+           WHERE ($2::uuid IS NULL OR d.queue_id = $2)
+           ORDER BY d.moved_at DESC
+           LIMIT $3 OFFSET $4"#,
+    )
+    .bind(user_id)
     .bind(queue_id)
     .bind(limit)
     .bind(offset)
@@ -1581,6 +1726,37 @@ pub async fn create_batch(
     Ok(b)
 }
 
+/// Create the batch record, all child jobs, and their outbox events atomically.
+/// A client never observes a partially-created batch after a validation or DB error.
+pub async fn create_batch_with_jobs(
+    pool: &PgPool,
+    project_id: Uuid,
+    queue_id: Uuid,
+    name: &str,
+    jobs: Vec<CreateJobParams>,
+) -> AppResult<(Batch, Vec<Job>)> {
+    let mut tx = pool.begin().await?;
+    enforce_queue_rate_limit(&mut tx, queue_id, jobs.len() as i64).await?;
+    let batch = sqlx::query_as::<_, Batch>(
+        r#"INSERT INTO batches (project_id, queue_id, name, total_jobs)
+           VALUES ($1, $2, $3, $4) RETURNING *"#,
+    )
+    .bind(project_id)
+    .bind(queue_id)
+    .bind(name)
+    .bind(jobs.len() as i32)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let mut created = Vec::with_capacity(jobs.len());
+    for mut params in jobs {
+        params.batch_id = Some(batch.id);
+        created.push(insert_job_with_outbox(&mut tx, &params).await?);
+    }
+    tx.commit().await?;
+    Ok((batch, created))
+}
+
 pub async fn get_batch(pool: &PgPool, batch_id: Uuid) -> AppResult<Option<Batch>> {
     let b = sqlx::query_as::<_, Batch>("SELECT * FROM batches WHERE id = $1")
         .bind(batch_id)
@@ -1611,7 +1787,7 @@ pub async fn manual_retry_job(
     subject: String,
 ) -> AppResult<Job> {
     let mut tx = pool.begin().await?;
-    let job: Job = sqlx::query_as::<_, Job>(
+    let job: Option<Job> = sqlx::query_as::<_, Job>(
         r#"UPDATE jobs SET
              status = 'QUEUED'::job_status,
              attempt = 0,
@@ -1626,8 +1802,12 @@ pub async fn manual_retry_job(
            RETURNING *"#,
     )
     .bind(job_id)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+
+    let job = job.ok_or_else(|| {
+        AppError::Conflict("job is not in FAILED or RETRY_WAIT status".to_string())
+    })?;
 
     let event_id = Uuid::new_v4();
     sqlx::query(

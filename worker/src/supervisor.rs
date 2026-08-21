@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use async_nats::jetstream;
 use common::Config;
@@ -9,7 +9,9 @@ use db::queries;
 use uuid::Uuid;
 
 use crate::consumer::WorkerConsumer;
-use crate::handler::{AlwaysFailHandler, EchoHandler, ExternalPaymentHandler, HandlerRegistry, SleepHandler};
+use crate::handler::{
+    AlwaysFailHandler, EchoHandler, ExternalPaymentHandler, HandlerRegistry, SleepHandler,
+};
 
 /// The worker supervisor: registers the worker, starts heartbeat,
 /// starts consumers for assigned subjects, and handles graceful shutdown.
@@ -49,7 +51,9 @@ impl WorkerSupervisor {
     pub async fn with_default_handlers(self) -> Self {
         self.registry.register(Arc::new(EchoHandler)).await;
         self.registry.register(Arc::new(SleepHandler)).await;
-        self.registry.register(Arc::new(ExternalPaymentHandler)).await;
+        self.registry
+            .register(Arc::new(ExternalPaymentHandler))
+            .await;
         self.registry
             .register(Arc::new(AlwaysFailHandler {
                 message: "intentional test failure".to_string(),
@@ -118,9 +122,13 @@ impl WorkerSupervisor {
 
         // Graceful shutdown: stop accepting new work, wait for running jobs
         self.shutdown.cancel();
-        info!("waiting for consumers to drain (grace: {}s)", self.config.shutdown_grace_secs);
+        info!(
+            "waiting for consumers to drain (grace: {}s)",
+            self.config.shutdown_grace_secs
+        );
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(self.config.shutdown_grace_secs);
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_secs(self.config.shutdown_grace_secs);
         for handle in consumer_handles {
             let _ = tokio::time::timeout_at(deadline, handle).await;
         }
@@ -180,6 +188,6 @@ fn stream_name_for_subject(subject: &str) -> String {
     if parts.len() >= 6 && parts[0] == "org" && parts[2] == "proj" && parts[4] == "queue" {
         format!("JOBS_{}_{}_{}", parts[1], parts[3], parts[5]).replace('-', "_")
     } else {
-        format!("JOBS_{}", subject.replace('.', "_").replace('-', "_"))
+        format!("JOBS_{}", subject.replace(['.', '-'], "_"))
     }
 }

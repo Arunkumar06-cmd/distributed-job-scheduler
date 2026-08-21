@@ -1,6 +1,32 @@
 # Distributed Job Scheduler
 
-Production-inspired distributed job scheduling platform: reliable async background jobs across multiple workers with PostgreSQL as source of truth and NATS JetStream for durable delivery.
+<p align="center">
+  <strong>Reliable asynchronous job execution for multi-tenant applications.</strong><br />
+  Rust · PostgreSQL · NATS JetStream · React
+</p>
+
+<p align="center">
+  <a href="https://github.com/Arunkumar06-cmd/distributed-job-scheduler/actions"><img src="https://img.shields.io/github/actions/workflow/status/Arunkumar06-cmd/distributed-job-scheduler/ci.yml?branch=main&label=CI&style=flat-square" alt="CI status" /></a>
+  <img src="https://img.shields.io/badge/Rust-stable-000000?style=flat-square&logo=rust" alt="Rust" />
+  <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql" alt="PostgreSQL 18" />
+  <img src="https://img.shields.io/badge/NATS-JetStream-27AAE1?style=flat-square" alt="NATS JetStream" />
+  <img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT license" />
+</p>
+
+Production-inspired distributed job scheduling platform for reliable asynchronous work across multiple workers. PostgreSQL remains the source of truth; a transactional outbox and NATS JetStream provide durable delivery.
+
+## Why this exists
+
+This project focuses on the difficult parts of a scheduler rather than a thin queue wrapper: atomic claims, lease fencing, bounded concurrency, durable handoff, retry policy, tenant isolation, and traceable execution history.
+
+| Concern | Implementation |
+| --- | --- |
+| Duplicate execution | PostgreSQL claim transaction + `lease_epoch` fencing |
+| Worker crashes | Renewable leases, stale-work reclamation, JetStream redelivery |
+| Lost publish | Transactional outbox with relay lease recovery |
+| Queue overload | Capacity tokens and admission-time sliding-window rate limits |
+| Permanent failures | Retry history, DLQ, and explicit replay |
+| Multi-tenancy | Organization membership checks on operational and list APIs |
 
 ## Demo
 
@@ -17,21 +43,19 @@ Production-inspired distributed job scheduling platform: reliable async backgrou
 - **DB**: PostgreSQL 18 (ACID, row locks, SKIP LOCKED, advisory locks)
 - **Broker**: NATS JetStream 2.14 (durable streams, Ack/Nak/Progress, duplicate window)
 - **Workers**: Independent Rust processes (pull consumers, lease fencing)
-- **Frontend**: React 18 + Vite 5
+- **Frontend**: React 18 + Vite 6
 
 ## Quick Start
 
 ```bash
-# infra
-brew install postgresql@18 nats-server
-nats-server -js -sd /tmp/nats-js -p 4222 -m 8222 &
-createdb job_scheduler
+# infrastructure (recommended)
+docker compose up -d postgres nats
 
 # api (spawns outbox relay + scheduler)
-DATABASE_URL=postgres:///job_scheduler NATS_URL=nats://127.0.0.1:4222 cargo run -p api
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler NATS_URL=nats://127.0.0.1:4222 cargo run -p api
 
 # worker (in another terminal)
-DATABASE_URL=postgres:///job_scheduler cargo run -p worker
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler NATS_URL=nats://127.0.0.1:4222 cargo run -p worker
 
 # frontend
 cd frontend && npm install && npm run dev  # http://localhost:3000 -> proxies to :8080
@@ -83,8 +107,7 @@ See `docs/architecture.md` and `docs/er-diagram.md`.
 | GET | /dlq?queue_id= | Bearer | DLQ |
 | POST | /dlq/:id/replay | Bearer | Replay DLQ |
 | GET | /health | - | Health |
-| GET | /metrics | - | Global metrics |
-| GET | /events/stream | Bearer | SSE live updates |
+| GET | /metrics | Bearer | Membership-scoped metrics |
 
 **Idempotency**: `Idempotency-Key` header or body field -> `UNIQUE(queue_id, idempotency_key)` -> `409 Conflict` on duplicate. NATS publish uses `Nats-Msg-Id = outbox.id` for broker dedup. Business handlers must be idempotent (`job_id` as external key).
 
@@ -121,14 +144,26 @@ Dashboard at `http://localhost:3000`:
 ## Tests
 
 ```bash
-cargo test  # unit: retry, cron, state machine
-python3 /tmp/e2e_test.py  # e2e: idempotency, concurrency, pause/resume, delayed, batch, DLQ, cron, pagination
-# chaos (manual):
-# - kill worker mid-job -> redelivery + epoch fence verified (Job stays COMPLETED, not double-executed)
-# - kill relay mid-publish -> outbox reclaimed after lease
+cargo test --workspace -- --test-threads=1
+cargo clippy --workspace --all-targets -- -D warnings
+cd frontend && npm ci && npm run build && npm audit --audit-level=high
+
+# API workflow: idempotency, concurrency, pause/resume, delayed jobs,
+# transactional batches, DLQ, cron, and pagination
+python3 /tmp/e2e_test.py
+
+# controlled admission-load test (10 → 50 → 100 virtual users)
+k6 run bench/k6.js
 ```
 
-See `docs/testing.md`.
+### Verified locally
+
+- 12/12 Rust tests pass against PostgreSQL 18, including cron deduplication, idempotency, queue-capacity contention, and lease fencing.
+- API lifecycle smoke test passes against PostgreSQL + NATS JetStream.
+- k6 admission-load run: 11,100 successful `202 Accepted` submissions at 219 jobs/s; p95 166 ms and p99 under 200 ms.
+- External-side-effect uncertainty is retained as `UNKNOWN_EXTERNAL_RESULT`; the scheduler never infers a payment outcome.
+
+See [testing notes](docs/testing.md), [architecture](docs/architecture.md), and [design decisions](docs/design-decisions.md).
 
 ## Design Decisions
 

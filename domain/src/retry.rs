@@ -45,7 +45,12 @@ mod tests {
 
     #[test]
     fn fixed_delay() {
-        let p = RetryPolicy { max_attempts: 4, strategy: RetryStrategy::Fixed, base_delay_secs: 10, max_delay_secs: 3600 };
+        let p = RetryPolicy {
+            max_attempts: 4,
+            strategy: RetryStrategy::Fixed,
+            base_delay_secs: 10,
+            max_delay_secs: 3600,
+        };
         assert_eq!(p.delay_secs(1), 10);
         assert_eq!(p.delay_secs(2), 10);
         assert_eq!(p.delay_secs(3), 10);
@@ -53,7 +58,12 @@ mod tests {
 
     #[test]
     fn linear_delay() {
-        let p = RetryPolicy { max_attempts: 4, strategy: RetryStrategy::Linear, base_delay_secs: 10, max_delay_secs: 3600 };
+        let p = RetryPolicy {
+            max_attempts: 4,
+            strategy: RetryStrategy::Linear,
+            base_delay_secs: 10,
+            max_delay_secs: 3600,
+        };
         assert_eq!(p.delay_secs(1), 10);
         assert_eq!(p.delay_secs(2), 20);
         assert_eq!(p.delay_secs(3), 30);
@@ -61,7 +71,12 @@ mod tests {
 
     #[test]
     fn exponential_delay() {
-        let p = RetryPolicy { max_attempts: 4, strategy: RetryStrategy::Exponential, base_delay_secs: 5, max_delay_secs: 3600 };
+        let p = RetryPolicy {
+            max_attempts: 4,
+            strategy: RetryStrategy::Exponential,
+            base_delay_secs: 5,
+            max_delay_secs: 3600,
+        };
         assert_eq!(p.delay_secs(1), 5);
         assert_eq!(p.delay_secs(2), 10);
         assert_eq!(p.delay_secs(3), 20);
@@ -70,7 +85,12 @@ mod tests {
 
     #[test]
     fn max_delay_cap() {
-        let p = RetryPolicy { max_attempts: 10, strategy: RetryStrategy::Exponential, base_delay_secs: 5, max_delay_secs: 30 };
+        let p = RetryPolicy {
+            max_attempts: 10,
+            strategy: RetryStrategy::Exponential,
+            base_delay_secs: 5,
+            max_delay_secs: 30,
+        };
         assert_eq!(p.delay_secs(10), 30);
     }
 }

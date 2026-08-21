@@ -33,8 +33,8 @@ pub enum AppError {
     #[error("internal: {0}")]
     Internal(String),
 
-    #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
+    #[error("database error: {0}")]
+    Sqlx(sqlx::Error),
 
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -49,6 +49,17 @@ pub enum AppError {
     Nats(#[from] async_nats::Error),
 }
 
+impl From<sqlx::Error> for AppError {
+    fn from(e: sqlx::Error) -> Self {
+        if let sqlx::Error::Database(ref db) = e {
+            if db.code().as_deref() == Some("23505") {
+                return AppError::Conflict(format!("duplicate key: {}", db.message()));
+            }
+        }
+        AppError::Sqlx(e)
+    }
+}
+
 impl AppError {
     pub fn code(&self) -> ErrorCode {
         match self {
@@ -60,7 +71,12 @@ impl AppError {
             AppError::QueuePaused => ErrorCode::QueuePaused,
             AppError::QueueAtCapacity => ErrorCode::QueueAtCapacity,
             AppError::StaleLease => ErrorCode::StaleLease,
-            AppError::Internal(_) | AppError::Sqlx(_) | AppError::Json(_) | AppError::Jwt(_) | AppError::Io(_) | AppError::Nats(_) => ErrorCode::Internal,
+            AppError::Internal(_)
+            | AppError::Sqlx(_)
+            | AppError::Json(_)
+            | AppError::Jwt(_)
+            | AppError::Io(_)
+            | AppError::Nats(_) => ErrorCode::Internal,
         }
     }
 }
@@ -98,7 +114,9 @@ impl IntoResponse for AppError {
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Validation(_) => StatusCode::BAD_REQUEST,
-            AppError::QueuePaused | AppError::QueueAtCapacity | AppError::StaleLease => StatusCode::CONFLICT,
+            AppError::QueuePaused | AppError::QueueAtCapacity | AppError::StaleLease => {
+                StatusCode::CONFLICT
+            }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let request_id = Uuid::new_v4().to_string();

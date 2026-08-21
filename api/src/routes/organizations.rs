@@ -1,8 +1,9 @@
 use axum::{
-    Json, extract::{State, Path},
+    extract::{Path, State},
     http::StatusCode,
+    Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
@@ -24,7 +25,8 @@ pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<CreateOrgReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
-    req.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    req.validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
     let org = queries::create_organization(&state.pool, &req.name, &req.slug, auth.user_id).await?;
     let _ = state.broadcast.send(format!("org.created:{}", org.id));
     Ok((StatusCode::CREATED, Json(serde_json::json!(org))))
@@ -44,7 +46,9 @@ pub async fn get(
     Path(org_id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
     if !queries::user_in_org(&state.pool, auth.user_id, org_id).await? {
-        return Err(AppError::Forbidden("not a member of this organization".to_string()));
+        return Err(AppError::Forbidden(
+            "not a member of this organization".to_string(),
+        ));
     }
     let org: Option<db::models::Organization> =
         sqlx::query_as("SELECT * FROM organizations WHERE id = $1")

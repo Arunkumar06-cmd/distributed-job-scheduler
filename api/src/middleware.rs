@@ -1,10 +1,5 @@
-use axum::{
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
 use async_trait::async_trait;
+use axum::{extract::Request, middleware::Next, response::Response};
 use uuid::Uuid;
 
 use crate::auth::verify_token;
@@ -28,7 +23,11 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .ok_or(AppError::Unauthorized)?
         .to_string();
-    let token = if let Some(s) = auth.strip_prefix("Bearer ") { s } else { &auth };
+    let token = if let Some(s) = auth.strip_prefix("Bearer ") {
+        s
+    } else {
+        &auth
+    };
     let data = verify_token(token, &state.config).map_err(|_| AppError::Unauthorized)?;
     let user = AuthUser {
         user_id: data.claims.sub,
@@ -54,7 +53,11 @@ impl axum::extract::FromRequestParts<AppState> for AuthUser {
             .get("Authorization")
             .and_then(|v| v.to_str().ok())
             .ok_or(AppError::Unauthorized)?;
-        let token = if let Some(s) = auth.strip_prefix("Bearer ") { s } else { auth };
+        let token = if let Some(s) = auth.strip_prefix("Bearer ") {
+            s
+        } else {
+            auth
+        };
         let data = verify_token(token, &state.config).map_err(|_| AppError::Unauthorized)?;
         Ok(AuthUser {
             user_id: data.claims.sub,

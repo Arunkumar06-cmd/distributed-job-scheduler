@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use axum::extract::FromRef;
 use sqlx::PgPool;
+use std::sync::Arc;
 
 use common::Config;
 

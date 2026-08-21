@@ -10,12 +10,13 @@ export const options = {
     { duration: '10s', target: 0 },
   ],
   thresholds: {
-    http_req_failed: ['rate<0.01'],
+    job_create_success: ['rate>0.99'],
     http_req_duration: ['p(95)<100', 'p(99)<200'],
   },
 };
 
 const claimLatency = new Trend('claim_latency');
+const jobCreateSuccess = new Rate('job_create_success');
 const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 const TOKEN = __ENV.TOKEN;
 
@@ -32,6 +33,7 @@ export function setup() {
 export default function (data) {
   let payload = JSON.stringify({ queue_id: data.queue_id, payload: { type: 'echo', ts: Date.now() }, priority: Math.floor(Math.random()*100) });
   let res = http.post(`${BASE}/jobs`, payload, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.token}` } });
+  jobCreateSuccess.add(res.status === 202);
   check(res, { '202': (r) => r.status === 202 });
   claimLatency.add(res.timings.duration);
   sleep(0.1);

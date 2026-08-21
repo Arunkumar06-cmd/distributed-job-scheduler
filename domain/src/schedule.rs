@@ -22,12 +22,22 @@ pub fn parse_cron(expr: &str, tz_str: &str) -> Result<Schedule, CronError> {
 
 pub fn next_occurrence(schedule: &Schedule, tz: Tz, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let _ = after.with_timezone(&tz);
-    schedule.upcoming(tz).next().map(|dt| dt.with_timezone(&Utc))
+    schedule
+        .upcoming(tz)
+        .next()
+        .map(|dt| dt.with_timezone(&Utc))
 }
 
-pub fn previous_occurrence(schedule: &Schedule, tz: Tz, _before: DateTime<Utc>) -> Option<DateTime<Utc>> {
+pub fn previous_occurrence(
+    schedule: &Schedule,
+    tz: Tz,
+    _before: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
     // cron crate doesn't have prev(); we only use next() in the scheduler.
-    schedule.upcoming(tz).next().map(|dt| dt.with_timezone(&Utc))
+    schedule
+        .upcoming(tz)
+        .next()
+        .map(|dt| dt.with_timezone(&Utc))
 }
 
 pub fn occurrence_key(scheduled_job_id: &uuid::Uuid, fire_time: DateTime<Utc>) -> String {

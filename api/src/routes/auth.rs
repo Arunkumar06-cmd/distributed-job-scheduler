@@ -1,4 +1,4 @@
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -7,7 +7,6 @@ use crate::middleware::AuthUser;
 use crate::state::AppState;
 use common::{AppError, AppResult};
 use db::queries;
-use uuid::Uuid;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct RegisterReq {
@@ -37,17 +36,10 @@ pub async fn register(
     State(state): State<AppState>,
     Json(req): Json<RegisterReq>,
 ) -> AppResult<(StatusCode, Json<AuthResp>)> {
-    req.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    req.validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
     let hash = hash_password(&req.password).map_err(|e| AppError::Internal(e.to_string()))?;
-    let user = queries::create_user(&state.pool, &req.email, &hash, &req.display_name)
-        .await
-        .map_err(|e| {
-            if e.to_string().contains("duplicate") || e.to_string().contains("unique") {
-                AppError::Conflict("email already registered".to_string())
-            } else {
-                e
-            }
-        })?;
+    let user = queries::create_user(&state.pool, &req.email, &hash, &req.display_name).await?;
     let token = create_token(user.id, &user.email, &state.config)
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok((
@@ -67,7 +59,8 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginReq>,
 ) -> AppResult<Json<AuthResp>> {
-    req.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    req.validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
     let user = queries::find_user_by_email(&state.pool, &req.email)
         .await?
         .ok_or(AppError::Unauthorized)?;

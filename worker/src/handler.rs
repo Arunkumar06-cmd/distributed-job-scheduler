@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use common::AppResult;
 use db::models::Job;
 
 /// Result of executing a job handler.
@@ -118,14 +117,21 @@ impl JobHandler for ExternalPaymentHandler {
     }
 
     async fn handle(&self, job: &Job) -> HandlerResult {
-        let should_unknown = job.payload.get("force_unknown").and_then(|v| v.as_bool()).unwrap_or(false);
+        let should_unknown = job
+            .payload
+            .get("force_unknown")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if should_unknown || job.attempt == 1 {
             // First attempt simulates network timeout after sending request
             return HandlerResult::Unknown {
-                message: "payment request sent but response timeout - unknown if succeeded".to_string(),
+                message: "payment request sent but response timeout - unknown if succeeded"
+                    .to_string(),
                 kind: "external_timeout".to_string(),
             };
         }
-        HandlerResult::Ok(Some(serde_json::json!({"payment": "confirmed", "idempotency": job.id})))
+        HandlerResult::Ok(Some(
+            serde_json::json!({"payment": "confirmed", "idempotency": job.id}),
+        ))
     }
 }

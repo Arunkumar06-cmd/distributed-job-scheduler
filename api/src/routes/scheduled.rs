@@ -1,11 +1,15 @@
-use axum::{Json, extract::{State, Path, Query}, http::StatusCode};
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    Json,
+};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
 use crate::state::AppState;
-use common::{AppError, AppResult, ids};
+use common::{AppError, AppResult};
 use db::queries;
 use domain::schedule;
 use uuid::Uuid;
@@ -29,19 +33,29 @@ pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<CreateScheduledReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
-    req.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    req.validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
     if req.cron_expr.is_none() && req.run_once_at.is_none() {
-        return Err(AppError::Validation("either cron_expr or run_once_at is required".to_string()));
+        return Err(AppError::Validation(
+            "either cron_expr or run_once_at is required".to_string(),
+        ));
     }
-    let queue = queries::get_queue(&state.pool, req.queue_id).await?.ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
-    let project = queries::get_project(&state.pool, queue.project_id).await?.ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
+    let queue = queries::get_queue(&state.pool, req.queue_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
+    let project = queries::get_project(&state.pool, queue.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
     if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
         return Err(AppError::Forbidden("forbidden".to_string()));
     }
     let tz = req.timezone.as_deref().unwrap_or("UTC");
     let next_fire = if let Some(expr) = &req.cron_expr {
-        let sched = schedule::parse_cron(expr, tz).map_err(|e| AppError::Validation(e.to_string()))?;
-        let tz_parsed: chrono_tz::Tz = tz.parse().map_err(|_| AppError::Validation(format!("invalid timezone {tz}")))?;
+        let sched =
+            schedule::parse_cron(expr, tz).map_err(|e| AppError::Validation(e.to_string()))?;
+        let tz_parsed: chrono_tz::Tz = tz
+            .parse()
+            .map_err(|_| AppError::Validation(format!("invalid timezone {tz}")))?;
         schedule::next_occurrence(&sched, tz_parsed, Utc::now())
     } else {
         req.run_once_at
@@ -58,7 +72,8 @@ pub async fn create(
         tz,
         req.run_once_at,
         next_fire,
-    ).await?;
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(serde_json::json!(sj))))
 }
 
@@ -73,13 +88,17 @@ pub async fn list(
     Query(q): Query<ListScheduledQuery>,
 ) -> AppResult<Json<serde_json::Value>> {
     if let Some(qid) = q.queue_id {
-        let queue = queries::get_queue(&state.pool, qid).await?.ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
-        let project = queries::get_project(&state.pool, queue.project_id).await?.ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
+        let queue = queries::get_queue(&state.pool, qid)
+            .await?
+            .ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
+        let project = queries::get_project(&state.pool, queue.project_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
         if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
             return Err(AppError::Forbidden("forbidden".to_string()));
         }
     }
-    let jobs = queries::list_scheduled_jobs(&state.pool, q.queue_id).await?;
+    let jobs = queries::list_scheduled_jobs_for_user(&state.pool, auth.user_id, q.queue_id).await?;
     Ok(Json(serde_json::json!(jobs)))
 }
 
@@ -88,15 +107,25 @@ pub async fn delete(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> AppResult<StatusCode> {
-    let sj: Option<db::models::ScheduledJob> = sqlx::query_as("SELECT * FROM scheduled_jobs WHERE id = $1")
-        .bind(id).fetch_optional(&state.pool).await?;
+    let sj: Option<db::models::ScheduledJob> =
+        sqlx::query_as("SELECT * FROM scheduled_jobs WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?;
     let sj = sj.ok_or_else(|| AppError::NotFound("scheduled job not found".to_string()))?;
-    let queue = queries::get_queue(&state.pool, sj.queue_id).await?.ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
-    let project = queries::get_project(&state.pool, queue.project_id).await?.ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
+    let queue = queries::get_queue(&state.pool, sj.queue_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
+    let project = queries::get_project(&state.pool, queue.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
     if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
         return Err(AppError::Forbidden("forbidden".to_string()));
     }
     queries::deactivate_scheduled_job(&state.pool, id).await?;
-    sqlx::query("DELETE FROM scheduled_jobs WHERE id = $1").bind(id).execute(&state.pool).await?;
+    sqlx::query("DELETE FROM scheduled_jobs WHERE id = $1")
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }

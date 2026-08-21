@@ -1,5 +1,5 @@
-use chrono::{DateTime, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation, TokenData};
+use chrono::Utc;
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, TokenData, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -14,7 +14,7 @@ pub struct Claims {
 }
 
 impl Claims {
-    pub fn new(user_id: Uuid, email: String, secret: &str) -> Self {
+    pub fn new(user_id: Uuid, email: String, _secret: &str) -> Self {
         let now = Utc::now().timestamp() as usize;
         Self {
             sub: user_id,
@@ -25,7 +25,11 @@ impl Claims {
     }
 }
 
-pub fn create_token(user_id: Uuid, email: &str, config: &Config) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn create_token(
+    user_id: Uuid,
+    email: &str,
+    config: &Config,
+) -> Result<String, jsonwebtoken::errors::Error> {
     let claims = Claims::new(user_id, email.to_string(), &config.jwt_secret);
     encode(
         &Header::default(),
@@ -34,7 +38,10 @@ pub fn create_token(user_id: Uuid, email: &str, config: &Config) -> Result<Strin
     )
 }
 
-pub fn verify_token(token: &str, config: &Config) -> Result<TokenData<Claims>, jsonwebtoken::errors::Error> {
+pub fn verify_token(
+    token: &str,
+    config: &Config,
+) -> Result<TokenData<Claims>, jsonwebtoken::errors::Error> {
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(config.jwt_secret.as_bytes()),
@@ -58,5 +65,7 @@ pub fn verify_password(hash: &str, password: &str) -> Result<bool, argon2::passw
         Argon2,
     };
     let parsed = PasswordHash::new(hash)?;
-    Ok(Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
 }

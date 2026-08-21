@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::{
     http::{HeaderValue, Method},
-    routing::{delete, get, patch, post},
+    routing::{delete, get, post},
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -11,19 +11,33 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use api::{auth, middleware, routes, state::AppState};
+use api::{routes, state::AppState};
 use common::Config;
-use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=debug,sqlx=warn".into()))
-        .with(tracing_subscriber::fmt::layer().json())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,tower_http=debug,sqlx=warn".into()),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_level(true),
+        )
         .init();
 
     let config = Arc::new(Config::from_env());
     tracing::info!(config = ?config, "starting api");
+    let cors_origin = match std::env::var("CORS_ALLOWED_ORIGIN") {
+        Ok(origin) => origin,
+        Err(_) if std::env::var("RUST_ENV").as_deref() == Ok("production") => {
+            anyhow::bail!("CORS_ALLOWED_ORIGIN must be set in production")
+        }
+        Err(_) => "http://localhost:5173".to_string(),
+    };
+    let cors_origin: HeaderValue = cors_origin.parse()?;
 
     // DB (pool isolation §37: separate pools for api/worker/scheduler)
     let pool = db::pool::connect_with_size(&config.database_url, config.api_pool_size).await?;
@@ -66,7 +80,13 @@ async fn main() -> anyhow::Result<()> {
         let sd = shutdown.clone();
         tokio::spawn(async move {
             let publisher = outbox::publisher::Publisher::new(nats_client);
-            let relay = outbox::relay::OutboxRelay::new(pool_c, publisher, format!("relay-{}", uuid::Uuid::new_v4()), &cfg, sd);
+            let relay = outbox::relay::OutboxRelay::new(
+                pool_c,
+                publisher,
+                format!("relay-{}", uuid::Uuid::new_v4()),
+                &cfg,
+                sd,
+            );
             relay.run().await;
         });
         tracing::info!("outbox relay spawned");
@@ -92,7 +112,9 @@ async fn main() -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                if sd_ai.is_cancelled() { break; }
+                if sd_ai.is_cancelled() {
+                    break;
+                }
                 let pending: Vec<(uuid::Uuid,)> = sqlx::query_as(
                     r#"SELECT dlq.id FROM dead_letter_entries dlq LEFT JOIN failure_summaries fs ON fs.dlq_id = dlq.id WHERE fs.id IS NULL LIMIT 5"#,
                 )
@@ -103,7 +125,8 @@ async fn main() -> anyhow::Result<()> {
                     // Mock LLM: in prod would call OpenAI API, here deterministic template
                     let summary = "Downstream service repeatedly returned error. Job exhausted retries via exponential backoff. Likely dependency outage.";
                     let root = "External dependency failure (503/timeout)";
-                    let remediation = "Inspect downstream health, then POST /dlq/:id/replay after fix.";
+                    let remediation =
+                        "Inspect downstream health, then POST /dlq/:id/replay after fix.";
                     let _ = sqlx::query(
                         r#"INSERT INTO failure_summaries (dlq_id, job_id, summary, root_cause, remediation, model)
                            SELECT id, job_id, $2, $3, $4, 'mock-llm' FROM dead_letter_entries WHERE id = $1
@@ -124,33 +147,48 @@ async fn main() -> anyhow::Result<()> {
 
     // Build router
     let app = Router::new()
-        // health / metrics (public)
+        // Health is public for infrastructure probes. Metrics require authentication.
         .route("/health", get(routes::health::health))
         .route("/metrics", get(routes::health::metrics))
-        .route("/events", get(routes::events::public_sse))
         // auth
         .route("/auth/register", post(routes::auth::register))
         .route("/auth/login", post(routes::auth::login))
         .route("/auth/me", get(routes::auth::me))
         // orgs
-        .route("/organizations", post(routes::organizations::create).get(routes::organizations::list))
+        .route(
+            "/organizations",
+            post(routes::organizations::create).get(routes::organizations::list),
+        )
         .route("/organizations/:id", get(routes::organizations::get))
         // projects
-        .route("/projects", post(routes::projects::create).get(routes::projects::list))
+        .route(
+            "/projects",
+            post(routes::projects::create).get(routes::projects::list),
+        )
         .route("/projects/:id", get(routes::projects::get))
         // queues
-        .route("/queues", post(routes::queues::create).get(routes::queues::list))
-        .route("/queues/:id", get(routes::queues::get).patch(routes::queues::update))
+        .route(
+            "/queues",
+            post(routes::queues::create).get(routes::queues::list),
+        )
+        .route(
+            "/queues/:id",
+            get(routes::queues::get).patch(routes::queues::update),
+        )
         .route("/queues/:id/pause", post(routes::queues::pause))
         .route("/queues/:id/resume", post(routes::queues::resume))
         .route("/queues/:id/stats", get(routes::queues::stats))
+        .route("/queues/batch-stats", get(routes::queues::batch_stats))
         // jobs
         .route("/jobs", post(routes::jobs::create).get(routes::jobs::list))
         .route("/jobs/batch", post(routes::jobs::create_batch))
         .route("/jobs/:id", get(routes::jobs::get))
         .route("/jobs/:id/retry", post(routes::jobs::retry))
         // scheduled
-        .route("/scheduled-jobs", post(routes::scheduled::create).get(routes::scheduled::list))
+        .route(
+            "/scheduled-jobs",
+            post(routes::scheduled::create).get(routes::scheduled::list),
+        )
         .route("/scheduled-jobs/:id", delete(routes::scheduled::delete))
         // workers
         .route("/workers", get(routes::workers::list))
@@ -164,14 +202,19 @@ async fn main() -> anyhow::Result<()> {
         .route("/batches/:id", get(routes::batches::get))
         .route("/workflows", post(routes::workflows::create))
         .route("/workflows/:id", get(routes::workflows::get))
-        // sse authed
-        .route("/events/stream", get(routes::events::sse_handler))
-        .route("/ws", get(routes::events::ws_handler))
+        // Live event fan-out is intentionally disabled until events carry organization
+        // ownership and can be filtered per connection.
         .with_state(state)
         .layer(
             CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
+                .allow_origin(cors_origin)
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PATCH,
+                    Method::DELETE,
+                    Method::OPTIONS,
+                ])
                 .allow_headers(Any),
         )
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -179,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .fallback_service(
             ServeDir::new("frontend/dist")
-                .not_found_service(ServeFile::new("frontend/dist/index.html"))
+                .not_found_service(ServeFile::new("frontend/dist/index.html")),
         );
 
     let addr: SocketAddr = format!("{}:{}", config.api_host, config.api_port).parse()?;

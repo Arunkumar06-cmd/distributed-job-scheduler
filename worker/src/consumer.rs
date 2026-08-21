@@ -1,13 +1,13 @@
+use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
-use futures::StreamExt;
 use tracing::{debug, error, info, warn};
 
 use async_nats::jetstream;
 use async_nats::jetstream::AckKind;
 use common::Config;
-use db::queries;
 use db::models::Job;
+use db::queries;
 use uuid::Uuid;
 
 use crate::handler::{HandlerRegistry, HandlerResult};
@@ -56,7 +56,7 @@ impl WorkerConsumer {
                     durable_name: Some(consumer_name.clone()),
                     filter_subject: subject.clone(),
                     ack_policy: jetstream::consumer::AckPolicy::Explicit,
-                    ack_wait: Duration::from_secs(self.config.lease_duration_secs as u64 * 2),
+                    ack_wait: Duration::from_secs(self.config.lease_duration_secs * 2),
                     max_deliver: 10,
                     ..Default::default()
                 },
@@ -124,25 +124,27 @@ impl WorkerConsumer {
             .and_then(|v| v.as_str().parse::<Uuid>().ok())
         {
             Some(id) => id,
-            None => {
-                match serde_json::from_slice::<serde_json::Value>(&msg.payload) {
-                    Ok(v) => {
-                        match v.get("job_id").and_then(|j| j.as_str()).and_then(|s| s.parse::<Uuid>().ok()) {
-                            Some(id) => id,
-                            None => {
-                                error!(subject = %subject, "no Job-Id header and no job_id in payload; discarding");
-                                let _ = msg.ack().await;
-                                return;
-                            }
+            None => match serde_json::from_slice::<serde_json::Value>(&msg.payload) {
+                Ok(v) => {
+                    match v
+                        .get("job_id")
+                        .and_then(|j| j.as_str())
+                        .and_then(|s| s.parse::<Uuid>().ok())
+                    {
+                        Some(id) => id,
+                        None => {
+                            error!(subject = %subject, "no Job-Id header and no job_id in payload; discarding");
+                            let _ = msg.ack().await;
+                            return;
                         }
                     }
-                    Err(e) => {
-                        error!(subject = %subject, error = %e, "bad payload; discarding");
-                        let _ = msg.ack().await;
-                        return;
-                    }
                 }
-            }
+                Err(e) => {
+                    error!(subject = %subject, error = %e, "bad payload; discarding");
+                    let _ = msg.ack().await;
+                    return;
+                }
+            },
         };
 
         debug!(job_id = %job_id, subject = %subject, nats_msg_id = %nats_msg_id, "received job");
@@ -160,12 +162,16 @@ impl WorkerConsumer {
             Ok(c) => c,
             Err(common::AppError::QueuePaused) => {
                 warn!(job_id = %job_id, "queue paused; NAK with delay");
-                let _ = msg.ack_with(AckKind::Nak(Some(Duration::from_secs(5)))).await;
+                let _ = msg
+                    .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
+                    .await;
                 return;
             }
             Err(common::AppError::QueueAtCapacity) => {
                 warn!(job_id = %job_id, "queue at capacity; NAK with delay");
-                let _ = msg.ack_with(AckKind::Nak(Some(Duration::from_secs(2)))).await;
+                let _ = msg
+                    .ack_with(AckKind::Nak(Some(Duration::from_secs(2))))
+                    .await;
                 return;
             }
             Err(common::AppError::Conflict(_)) => {
@@ -181,7 +187,10 @@ impl WorkerConsumer {
         };
 
         // Transition CLAIMED -> RUNNING
-        let job = match self.transition_to_running(claimed.job.id, claimed.lease_epoch).await {
+        let job = match self
+            .transition_to_running(claimed.job.id, claimed.lease_epoch)
+            .await
+        {
             Ok(j) => j,
             Err(e) => {
                 error!(job_id = %job_id, error = %e, "failed to transition to RUNNING; NAK");
@@ -326,15 +335,10 @@ impl WorkerConsumer {
         let handler = match self.registry.get(job_type).await {
             Some(h) => h,
             None => {
-                match self.registry.get("echo").await {
-                    Some(h) => h,
-                    None => {
-                        return HandlerResult::Permanent {
-                            message: format!("no handler for job type '{job_type}'"),
-                            kind: "no_handler".to_string(),
-                        };
-                    }
-                }
+                return HandlerResult::Permanent {
+                    message: format!("no handler registered for job type '{job_type}'"),
+                    kind: "no_handler".to_string(),
+                };
             }
         };
 
@@ -441,14 +445,17 @@ impl WorkerConsumer {
                 return;
             }
         };
-        let _ = sqlx::query("UPDATE jobs SET max_attempts = attempt WHERE id = $1 AND lease_epoch = $2")
-            .bind(job.id)
-            .bind(epoch)
-            .execute(&mut *tx)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE jobs SET max_attempts = attempt WHERE id = $1 AND lease_epoch = $2",
+        )
+        .bind(job.id)
+        .bind(epoch)
+        .execute(&mut *tx)
+        .await;
         let _ = tx.commit().await;
 
-        self.handle_failure(job, execution_id, epoch, message, kind, msg).await;
+        self.handle_failure(job, execution_id, epoch, message, kind, msg)
+            .await;
     }
 
     async fn handle_unknown(

@@ -5,7 +5,13 @@ pub fn new_id() -> Uuid {
 }
 
 pub fn nats_subject(org_id: &Uuid, project_id: &Uuid, queue_id: &Uuid, priority: i32) -> String {
-    let tier = if priority >= 10 { "high" } else if priority > 0 { "standard" } else { "low" };
+    let tier = if priority >= 10 {
+        "high"
+    } else if priority > 0 {
+        "standard"
+    } else {
+        "low"
+    };
     format!("org.{org_id}.proj.{project_id}.queue.{queue_id}.{tier}")
 }
 

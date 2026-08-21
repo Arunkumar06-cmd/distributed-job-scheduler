@@ -89,7 +89,10 @@ impl DlqReason {
 #[derive(Debug, thiserror::Error)]
 pub enum StateTransitionError {
     #[error("invalid transition: {from} -> {to}")]
-    Invalid { from: &'static str, to: &'static str },
+    Invalid {
+        from: &'static str,
+        to: &'static str,
+    },
 }
 
 pub fn validate_transition(from: JobStatus, to: JobStatus) -> Result<(), StateTransitionError> {

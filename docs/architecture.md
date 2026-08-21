@@ -88,7 +88,11 @@ org.{org_id}.proj.{project_id}.queue.{queue_id}.{tier}
 tier = high (priority>=10) | standard (>0) | low (0)
 ```
 
-Stream per queue: `JOBS_{org}_{proj}_{queue}` (dashes -> underscores), subjects `org.*.proj.*.queue.*.*` (or per-queue). Consumer per worker: `worker-{name}-{stream}` durable, `Explicit` ack, `AckWait = lease*2`, `max_deliver 10`.
+Stream per queue: `JOBS_{org}_{proj}_{queue}` (dashes -> underscores). A
+single-shard queue uses `org.{org}.proj.{project}.queue.{queue}.{tier}`;
+sharded queues use `...queue.{queue}.shard.{shard_id}.{tier}`. Workers create a
+durable pull consumer per shard, with `Explicit` ack, `AckWait = lease*2`, and
+`max_deliver 10`.
 
 Duplicate window: `Nats-Msg-Id` = `outbox.id` (stable across retries).
 

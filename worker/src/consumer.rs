@@ -47,7 +47,17 @@ impl WorkerConsumer {
 
     /// Consume from a single queue's stream subject.
     pub async fn consume_subject(self, subject: String, stream_name: String) {
-        let consumer_name = format!("{}-{}", self.worker_name, stream_name);
+        // Each queue shard needs an independent durable on the same stream.
+        // Encode the filter subject to avoid consumer-name collisions.
+        let consumer_name = format!(
+            "{}-{}-{}",
+            self.worker_name,
+            stream_name,
+            subject
+                .replace('.', "_")
+                .replace('*', "all")
+                .replace('>', "tail")
+        );
         let consumer = match self
             .js
             .create_consumer_on_stream(

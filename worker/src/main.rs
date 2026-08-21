@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Arc::new(Config::from_env());
-    tracing::info!(config = ?config, "starting worker");
+    tracing::info!(worker_id = %config.worker_id, worker_concurrency = config.worker_concurrency, "starting worker");
 
     let pool = db::pool::connect_with_size(&config.database_url, config.worker_pool_size).await?;
     tracing::info!("connected to postgres");
@@ -26,9 +26,9 @@ async fn main() -> anyhow::Result<()> {
     let nats = async_nats::connect(&config.nats_url).await?;
     tracing::info!(url = %config.nats_url, "connected to nats");
 
-    let queues: Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid)> =
-        sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid, uuid::Uuid)>(
-            r#"SELECT q.id, p.id, p.org_id FROM queues q JOIN projects p ON p.id = q.project_id"#,
+    let queues: Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid, i32)> =
+        sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid, uuid::Uuid, i32)>(
+            r#"SELECT q.id, p.id, p.org_id, q.shard_count FROM queues q JOIN projects p ON p.id = q.project_id"#,
         )
         .fetch_all(&pool)
         .await
@@ -36,21 +36,21 @@ async fn main() -> anyhow::Result<()> {
 
     let mut subjects = Vec::new();
     let js = async_nats::jetstream::new(nats.clone());
-    for (qid, pid, oid) in &queues {
-        let subject = format!("org.{oid}.proj.{pid}.queue.{qid}.*");
+    for (qid, pid, oid, shard_count) in &queues {
         let stream_name = format!("JOBS_{}_{}_{}", oid, pid, qid).replace('-', "_");
+        let stream_subject = format!("org.{oid}.proj.{pid}.queue.{qid}.>");
         if js.get_stream(&stream_name).await.is_err() {
             match js
                 .create_stream(async_nats::jetstream::stream::Config {
                     name: stream_name.clone(),
-                    subjects: vec![subject.clone()],
+                    subjects: vec![stream_subject.clone()],
                     max_messages: 100_000,
                     ..Default::default()
                 })
                 .await
             {
                 Ok(_) => {
-                    tracing::info!(stream = %stream_name, subject = %subject, "created stream for queue")
+                    tracing::info!(stream = %stream_name, subject = %stream_subject, "created stream for queue")
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, stream = %stream_name, "failed to create stream (may already exist with overlapping subject)")
@@ -59,13 +59,21 @@ async fn main() -> anyhow::Result<()> {
         } else {
             tracing::info!(stream = %stream_name, "found existing stream");
         }
-        subjects.push(subject);
+        if *shard_count <= 1 {
+            subjects.push(format!("org.{oid}.proj.{pid}.queue.{qid}.*"));
+        } else {
+            for shard_id in 0..*shard_count {
+                subjects.push(format!(
+                    "org.{oid}.proj.{pid}.queue.{qid}.shard.{shard_id}.*"
+                ));
+            }
+        }
     }
 
     if subjects.is_empty() {
         tracing::warn!("no queues found; worker will listen on wildcard");
         let stream_name = "JOBS_WILDCARD";
-        let subject = "org.*.proj.*.queue.*.*".to_string();
+        let subject = "org.*.proj.*.queue.*.>".to_string();
         if js.get_stream(stream_name).await.is_err() {
             let _ = js
                 .create_stream(async_nats::jetstream::stream::Config {
@@ -93,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg_w = config.clone();
     let sd_w = shutdown.clone();
     let mut known: std::collections::HashSet<uuid::Uuid> =
-        queues.iter().map(|(qid, _, _)| *qid).collect();
+        queues.iter().map(|(qid, _, _, _)| *qid).collect();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         loop {
@@ -109,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
                 known.insert(qid);
-                let subject = format!("org.{oid}.proj.{pid}.queue.{qid}.*");
+                let subject = format!("org.{oid}.proj.{pid}.queue.{qid}.>");
                 let stream_name = format!("JOBS_{}_{}_{}", oid, pid, qid).replace('-', "_");
                 let js = async_nats::jetstream::new(nats_w.clone());
                 if js.get_stream(&stream_name).await.is_err() {

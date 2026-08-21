@@ -51,7 +51,7 @@ paths, see the [architecture notes](docs/architecture.md).
 | Jobs | Immediate, delayed, scheduled, recurring, batch, manual retry, pagination, filtering |
 | Reliability | Atomic claims, capacity tokens, lease renewal, fencing, outbox relay, scheduler leader lock |
 | Operations | Worker heartbeats, execution attempts, structured logs, dead-letter replay, metrics |
-| Extensions | Workflow dependencies, queue admission control, unknown external-result state |
+| Extensions | Workflow dependencies, 429 queue admission limits, advisory leader lock, deterministic queue sharding, scoped SSE/WebSocket snapshots, opt-in AI failure summaries |
 
 ## Run locally
 
@@ -126,6 +126,19 @@ Latest local evidence:
 These figures are development-environment evidence, not a production capacity
 guarantee. Production readiness still requires deployment-specific load, soak,
 failover, backup/restore, and external-side-effect testing.
+
+## Optional production extensions
+
+- **RBAC:** owners/admins manage queues and members; members submit and retry
+  jobs; viewers are read-only. Owners/admins can set a membership role through
+  `POST /organizations/:id/members`.
+- **Live updates:** use authenticated, project-scoped snapshots at
+  `/events/stream?project_id=…` (SSE) or `/events/ws?project_id=…` (WebSocket).
+- **Queue sharding:** set `shard_count` (1–128) when creating a queue. New jobs
+  are deterministically routed by idempotency/routing key to a NATS shard.
+- **AI failure summaries:** explicitly set `AI_SUMMARIES_ENABLED=true`,
+  `OPENAI_API_KEY`, and optionally `OPENAI_MODEL`. This background task is
+  non-critical; scheduling continues if the provider is unavailable.
 
 ## Documentation
 

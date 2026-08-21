@@ -51,24 +51,28 @@ Defined `Scheduled, Queued, Claimed, Running, RetryWait, Completed, Failed, Canc
 
 Batches via `batches` table + trigger `update_batch_on_job_complete` (atomic counters). DLQ `ON DELETE RESTRICT` preserves history; `replayed_to_job_id` links replay. Not `CASCADE` to avoid losing audit when job deleted.
 
-## Frontend: Scoped Polling
+## Frontend: Polling with Scoped Live Snapshots
 
-The dashboard polls scoped API snapshots for jobs, queue health, and workers.
-WebSocket/SSE fan-out is deliberately deferred until event subscriptions can be
-enforced with the same organization and project authorization boundaries as
-the REST API. This keeps the current dashboard simple and avoids accidental
-cross-tenant broadcasts.
+The dashboard uses polling for its primary view. Authenticated clients can also
+open project-scoped SSE or WebSocket snapshot streams. Both authorize the
+project before upgrading/streaming and generate scoped database snapshots,
+rather than exposing the process-wide event broadcast channel.
 
 ## Implemented Extensions
 
 - **Workflow DAG**: Workflow creation records dependency edges; dependent jobs start in `WAITING` and are released only after their predecessors complete.
 - **Rate limiting**: Queue-level admission uses a sliding-window policy before accepting a new job.
+- **RBAC**: Organization roles are enforced: owner/admin control configuration
+  and memberships, member can submit/retry work, and viewer is read-only.
+- **Queue sharding**: A queue may define 1–128 deterministic NATS shards. The
+  default remains one shard so existing deployments keep their routing.
+- **AI failure summaries**: An opt-in, non-critical OpenAI Responses worker
+  writes structured DLQ summaries only when `AI_SUMMARIES_ENABLED` and
+  `OPENAI_API_KEY` are configured.
 
 ## Deferred Extensions
 
-- **Queue sharding**: Would need consistent hash on `job_id` -> partition, and consumer per shard. Omitted (single stream per queue suffices).
 - **Event-driven (webhooks)**: Would need `http` handler with retry + DLQ for webhook failures. Handler trait is extensible.
-- **RBAC**: Currently `org_memberships` with `owner/admin/member/viewer` but not enforced per route beyond `is_member`. Full RBAC would add middleware `require_role`.
 
 ## Measured Load Snapshot
 

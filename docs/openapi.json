@@ -14,6 +14,7 @@
     "/auth/register": { "post": { "summary": "Register", "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "email": { "type": "string" }, "password": { "type": "string" }, "display_name": { "type": "string" } } } } } } } },
     "/auth/login": { "post": { "summary": "Login" } },
     "/organizations": { "post": { "summary": "Create org" }, "get": { "summary": "List orgs" } },
+    "/organizations/{id}/members": { "post": { "summary": "Add or update organization member role" } },
     "/projects": { "post": { "summary": "Create project" }, "get": { "summary": "List" } },
     "/queues": { "post": { "summary": "Create queue" }, "get": { "summary": "List" } },
     "/queues/{id}/stats": { "get": { "summary": "Queue stats" } },
@@ -24,7 +25,10 @@
     "/jobs/{id}": { "get": { "summary": "Get job" } },
     "/jobs/{id}/retry": { "post": { "summary": "Retry" } },
     "/scheduled-jobs": { "post": { "summary": "Create scheduled" }, "get": { "summary": "List" } },
+    "/dlq/{id}/summary": { "get": { "summary": "Get AI failure summary" } },
     "/workers": { "get": { "summary": "List workers" } },
-    "/metrics": { "get": { "summary": "Metrics" } }
+    "/metrics": { "get": { "summary": "Metrics" } },
+    "/events/stream": { "get": { "summary": "Project-scoped SSE snapshots" } },
+    "/events/ws": { "get": { "summary": "Project-scoped WebSocket snapshots" } }
   }
 }

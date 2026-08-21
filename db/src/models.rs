@@ -53,6 +53,7 @@ pub struct Queue {
     pub max_receives: i32,
     pub rate_limit: Option<i32>,
     pub rate_window_secs: i32,
+    pub shard_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -63,6 +64,7 @@ pub struct Job {
     pub queue_id: Uuid,
     pub batch_id: Option<Uuid>,
     pub workflow_id: Option<Uuid>,
+    pub shard_id: i32,
     #[sqlx(rename = "type")]
     #[serde(rename = "type")]
     pub kind: JobKind,

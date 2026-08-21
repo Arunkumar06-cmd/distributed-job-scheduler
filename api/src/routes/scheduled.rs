@@ -46,9 +46,7 @@ pub async fn create(
     let project = queries::get_project(&state.pool, queue.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
-        return Err(AppError::Forbidden("forbidden".to_string()));
-    }
+    queries::require_org_writer(&state.pool, auth.user_id, project.org_id).await?;
     let tz = req.timezone.as_deref().unwrap_or("UTC");
     let next_fire = if let Some(expr) = &req.cron_expr {
         let sched =
@@ -119,9 +117,7 @@ pub async fn delete(
     let project = queries::get_project(&state.pool, queue.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
-        return Err(AppError::Forbidden("forbidden".to_string()));
-    }
+    queries::require_org_writer(&state.pool, auth.user_id, project.org_id).await?;
     queries::deactivate_scheduled_job(&state.pool, id).await?;
     sqlx::query("DELETE FROM scheduled_jobs WHERE id = $1")
         .bind(id)

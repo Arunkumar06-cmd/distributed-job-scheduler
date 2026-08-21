@@ -124,6 +124,42 @@ pub async fn require_org_admin(pool: &PgPool, user_id: Uuid, org_id: Uuid) -> Ap
     }
 }
 
+/// Members may submit and retry work; administrators control configuration.
+/// Viewer is intentionally read-only.
+pub async fn require_org_writer(pool: &PgPool, user_id: Uuid, org_id: Uuid) -> AppResult<()> {
+    let row: Option<(String,)> = sqlx::query_as(
+        r#"SELECT role::text FROM org_memberships WHERE user_id = $1 AND org_id = $2"#,
+    )
+    .bind(user_id)
+    .bind(org_id)
+    .fetch_optional(pool)
+    .await?;
+    match row {
+        Some((role,)) if matches!(role.as_str(), "owner" | "admin" | "member") => Ok(()),
+        Some(_) => Err(AppError::Forbidden("viewer role is read-only".to_string())),
+        None => Err(AppError::Forbidden("not in org".to_string())),
+    }
+}
+
+pub async fn upsert_org_membership(
+    pool: &PgPool,
+    org_id: Uuid,
+    user_id: Uuid,
+    role: &str,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"INSERT INTO org_memberships (org_id, user_id, role)
+           VALUES ($1, $2, $3::org_role)
+           ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role"#,
+    )
+    .bind(org_id)
+    .bind(user_id)
+    .bind(role)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 // =========================================================
 // PROJECTS
 // =========================================================
@@ -357,6 +393,7 @@ pub struct CreateJobParams {
     pub org_id: Uuid,
     pub project_id: Uuid,
     pub batch_id: Option<Uuid>,
+    pub shard_id: i32,
     pub kind: JobKind,
     pub payload: serde_json::Value,
     pub priority: i32,
@@ -396,7 +433,7 @@ async fn enforce_queue_rate_limit(
         .fetch_one(&mut **tx)
         .await?;
         if created.0 + requested_jobs > limit as i64 {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::RateLimited(format!(
                 "queue rate limit of {limit} jobs per {} seconds exceeded",
                 queue.1
             )));
@@ -413,15 +450,16 @@ async fn insert_job_with_outbox(conn: &mut PgConnection, p: &CreateJobParams) ->
     };
     let job: Job = sqlx::query_as::<_, Job>(
         r#"INSERT INTO jobs
-             (queue_id, batch_id, type, status, payload, priority,
+             (queue_id, batch_id, shard_id, type, status, payload, priority,
               max_attempts, retry_strategy, base_delay_secs, max_delay_secs,
               scheduled_for, idempotency_key, queued_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-              CASE WHEN $4::job_status = 'QUEUED' THEN NOW() ELSE NULL END)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+              CASE WHEN $5::job_status = 'QUEUED' THEN NOW() ELSE NULL END)
            RETURNING *"#,
     )
     .bind(p.queue_id)
     .bind(p.batch_id)
+    .bind(p.shard_id)
     .bind(p.kind)
     .bind(status)
     .bind(&p.payload)
@@ -952,14 +990,13 @@ pub async fn complete_job(
         .fetch_optional(&mut *tx)
         .await?;
         if let Some((org_id, proj_id)) = ctx {
-            let tier = if j.priority >= 10 {
-                "high"
-            } else if j.priority > 0 {
-                "standard"
-            } else {
-                "low"
-            };
-            let subject = format!("org.{org_id}.proj.{proj_id}.queue.{}.{}", j.queue_id, tier);
+            let subject = common::ids::nats_shard_subject(
+                &org_id,
+                &proj_id,
+                &j.queue_id,
+                j.shard_id,
+                j.priority,
+            );
             let eid = Uuid::new_v4();
             sqlx::query(
                 r#"INSERT INTO outbox_events (id, job_id, queue_id, org_id, project_id, subject, payload, priority, nats_msg_id)

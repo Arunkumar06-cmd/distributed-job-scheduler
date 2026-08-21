@@ -1,3 +1,4 @@
+pub mod ai_summaries;
 pub mod auth;
 pub mod middleware;
 pub mod routes;

@@ -12,7 +12,10 @@ Base URL: `http://localhost:8080`
 
 JWT HS256, 7d expiry, `sub = user_id`. Passwords `argon2` hashed.
 
-**Authorization**: every queue/project/org endpoint checks `org_memberships` and `project_memberships`. A user can only access resources in orgs they belong to. Returns `403 Forbidden` otherwise, `401` for missing/invalid token.
+**Authorization**: every resource is tenant-scoped. Owners/admins manage queue
+configuration and memberships; members may submit/retry work; viewers have
+read-only access. Returns `403` for insufficient role and `401` for missing or
+invalid tokens.
 
 ## Organizations
 
@@ -21,6 +24,8 @@ JWT HS256, 7d expiry, `sub = user_id`. Passwords `argon2` hashed.
 `GET /organizations` -> `[Organization]` (only caller's orgs)
 
 `GET /organizations/:id` -> `Organization` (must be member)
+
+`POST /organizations/:id/members` `{user_id, role: admin|member|viewer}` -> upserts a membership (owner/admin only)
 
 ## Projects
 
@@ -32,7 +37,7 @@ JWT HS256, 7d expiry, `sub = user_id`. Passwords `argon2` hashed.
 
 ## Queues
 
-`POST /queues` `{project_id, name, description?, max_concurrency? (1..1000), default_priority? (0..100), ack_wait_secs?, max_receives?, retry_policy_id?}` -> `201 Queue` + creates NATS stream `JOBS_{org}_{proj}_{queue}` with subjects `org.{org}.proj.{proj}.queue.{queue}.*`
+`POST /queues` `{project_id, name, description?, max_concurrency? (1..1000), default_priority? (0..100), ack_wait_secs?, max_receives?, retry_policy_id?, rate_limit?, rate_window_secs?, shard_count? (1..128)}` -> `201 Queue`. Queues with more than one shard route new jobs deterministically to a NATS shard.
 
 `GET /queues?project_id=` -> `[Queue]`
 
@@ -48,7 +53,7 @@ JWT HS256, 7d expiry, `sub = user_id`. Passwords `argon2` hashed.
 
 ## Jobs
 
-`POST /jobs` `Idempotency-Key: <key>` (header beats body) `{queue_id, payload, priority?, max_attempts? (1..100), retry_strategy? (fixed|linear|exponential), base_delay_secs?, max_delay_secs?, scheduled_for? (RFC3339), idempotency_key?, type?/kind? (immediate|delayed|scheduled|recurring|batch)}` -> `202 Job` (transactionally inserts `job` + `outbox` if not scheduled). Duplicate idempotency -> `409 {code: Conflict}`.
+`POST /jobs` `Idempotency-Key: <key>` (header beats body) `{queue_id, payload, priority?, max_attempts? (1..100), retry_strategy? (fixed|linear|exponential), base_delay_secs?, max_delay_secs?, scheduled_for? (RFC3339), idempotency_key?, type?/kind? (immediate|delayed|scheduled|recurring|batch)}` -> `202 Job` (transactionally inserts `job` + `outbox` if not scheduled). Duplicate idempotency -> `409`; admission-rate exhaustion -> `429`.
 
 `GET /jobs?queue_id=&status=&priority_min=&batch_id=&page=&page_size=` -> `{data, page, page_size, total, total_pages}` (status filter case-insensitive)
 
@@ -84,6 +89,8 @@ JWT HS256, 7d expiry, `sub = user_id`. Passwords `argon2` hashed.
 
 `POST /dlq/:id/replay` -> `Job` (creates new `QUEUED` job from DLQ payload + outbox, marks DLQ `replayed_to_job_id`)
 
+`GET /dlq/:id/summary` -> opt-in AI-generated `{summary, root_cause, remediation, model}` when available
+
 `GET /batches?project_id=` -> `[Batch]`
 
 `GET /batches/:id` -> `{batch, jobs}`
@@ -94,11 +101,15 @@ JWT HS256, 7d expiry, `sub = user_id`. Passwords `argon2` hashed.
 
 `GET /metrics` -> `{jobs:{total,queued,running,completed,failed,retry_wait,dlq}, workers:{active}, db:{pool_size,idle}, nats:{connected}}`
 
+`GET /events/stream?project_id=` -> authenticated, project-scoped SSE snapshots
+
+`GET /events/ws?project_id=` -> authenticated, project-scoped WebSocket snapshots
+
 ## Errors
 
 All errors: `status -> {error:{code, message}, request_id: uuid}`
 
-Codes: `NotFound (404), Unauthorized (401), Forbidden (403), Conflict (409), Validation (400), QueuePaused/QueueAtCapacity/StaleLease (409), Internal (500)`
+Codes: `NotFound (404), Unauthorized (401), Forbidden (403), Conflict (409), Validation (400), RateLimited (429), QueuePaused/QueueAtCapacity/StaleLease (409), Internal (500)`
 
 ## Pagination & Filtering
 

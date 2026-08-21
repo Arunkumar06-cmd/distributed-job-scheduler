@@ -17,6 +17,16 @@ pub struct ListDlqQuery {
     pub page_size: Option<i64>,
 }
 
+#[derive(sqlx::FromRow)]
+struct FailureSummaryRow {
+    queue_id: Uuid,
+    summary: String,
+    root_cause: Option<String>,
+    remediation: Option<String>,
+    model: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
 pub async fn list(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -68,12 +78,39 @@ pub async fn replay(
     let project = queries::get_project(&state.pool, queue.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
-        return Err(AppError::Forbidden("forbidden".to_string()));
-    }
+    queries::require_org_writer(&state.pool, auth.user_id, project.org_id).await?;
     let subject = ids::nats_subject(&dlq.org_id, &dlq.project_id, &dlq.queue_id, 5);
     let job =
         queries::replay_dlq_entry(&state.pool, dlq_id, dlq.org_id, dlq.project_id, subject).await?;
     let _ = state.broadcast.send(format!("dlq.replayed:{}", dlq_id));
     Ok(Json(serde_json::json!(job)))
+}
+
+pub async fn summary(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(dlq_id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    let row: Option<FailureSummaryRow> = sqlx::query_as(
+        r#"SELECT d.queue_id, f.summary, f.root_cause, f.remediation, f.model, f.created_at
+           FROM failure_summaries f JOIN dead_letter_entries d ON d.id = f.dlq_id
+           WHERE f.dlq_id = $1"#,
+    )
+    .bind(dlq_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let row = row.ok_or_else(|| AppError::NotFound("failure summary not found".to_string()))?;
+    let queue = queries::get_queue(&state.pool, row.queue_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
+    let project = queries::get_project(&state.pool, queue.project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
+    if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
+        return Err(AppError::Forbidden("forbidden".to_string()));
+    }
+    Ok(Json(serde_json::json!({
+        "dlq_id": dlq_id, "summary": row.summary, "root_cause": row.root_cause,
+        "remediation": row.remediation, "model": row.model, "created_at": row.created_at,
+    })))
 }

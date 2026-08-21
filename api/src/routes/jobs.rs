@@ -52,9 +52,7 @@ pub async fn create(
     let project = queries::get_project(&state.pool, queue.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
-        return Err(AppError::Forbidden("not authorized".to_string()));
-    }
+    queries::require_org_writer(&state.pool, auth.user_id, project.org_id).await?;
 
     // Idempotency key priority: header > body
     let header_key = headers
@@ -81,7 +79,18 @@ pub async fn create(
     if !(0..=100).contains(&priority) {
         return Err(AppError::Validation("priority must be 0..100".to_string()));
     }
-    let subject = ids::nats_subject(&project.org_id, &project.id, &queue.id, priority);
+    let routing_key = idempotency_key
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let shard_id = ids::shard_for_key(&routing_key, queue.shard_count);
+    let subject = ids::nats_subject_for_shard(
+        &project.org_id,
+        &project.id,
+        &queue.id,
+        queue.shard_count,
+        shard_id,
+        priority,
+    );
 
     let max_attempts = req.max_attempts.unwrap_or(3);
     let strategy = parse_retry_strategy(req.retry_strategy.as_deref());
@@ -91,6 +100,7 @@ pub async fn create(
         org_id: project.org_id,
         project_id: project.id,
         batch_id: None,
+        shard_id,
         kind,
         payload: req.payload,
         priority,
@@ -111,7 +121,7 @@ pub async fn create(
         let stream_name =
             format!("JOBS_{}_{}_{}", project.org_id, project.id, queue.id).replace('-', "_");
         let subject_filter = format!(
-            "org.{}.proj.{}.queue.{}.*",
+            "org.{}.proj.{}.queue.{}.>",
             project.org_id, project.id, queue.id
         );
         let _ = js.get_stream(&stream_name).await.map_err(|_| {
@@ -220,9 +230,7 @@ pub async fn get(
     let project = queries::get_project(&state.pool, queue.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
-        return Err(AppError::Forbidden("forbidden".to_string()));
-    }
+    queries::require_org_writer(&state.pool, auth.user_id, project.org_id).await?;
     Ok(Json(serde_json::json!(job)))
 }
 
@@ -240,10 +248,15 @@ pub async fn retry(
     let project = queries::get_project(&state.pool, queue.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
-        return Err(AppError::Forbidden("forbidden".to_string()));
-    }
-    let subject = ids::nats_subject(&project.org_id, &project.id, &queue.id, job.priority);
+    queries::require_org_writer(&state.pool, auth.user_id, project.org_id).await?;
+    let subject = ids::nats_subject_for_shard(
+        &project.org_id,
+        &project.id,
+        &queue.id,
+        queue.shard_count,
+        job.shard_id,
+        job.priority,
+    );
     let retried = queries::manual_retry_job(
         &state.pool,
         job_id,
@@ -293,21 +306,34 @@ pub async fn create_batch(
     let project = queries::get_project(&state.pool, queue.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
-        return Err(AppError::Forbidden("forbidden".to_string()));
-    }
+    queries::require_org_writer(&state.pool, auth.user_id, project.org_id).await?;
     let mut params_list = Vec::with_capacity(req.jobs.len());
     for item in req.jobs {
         let priority = item
             .priority
             .or(req.priority)
             .unwrap_or(queue.default_priority);
-        let subject = ids::nats_subject(&project.org_id, &project.id, &queue.id, priority);
+        let shard_id = ids::shard_for_key(
+            &item
+                .idempotency_key
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            queue.shard_count,
+        );
+        let subject = ids::nats_subject_for_shard(
+            &project.org_id,
+            &project.id,
+            &queue.id,
+            queue.shard_count,
+            shard_id,
+            priority,
+        );
         let params = queries::CreateJobParams {
             queue_id: req.queue_id,
             org_id: project.org_id,
             project_id: project.id,
             batch_id: None,
+            shard_id,
             kind: JobKind::Batch,
             payload: item.payload,
             priority,

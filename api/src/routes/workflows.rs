@@ -58,9 +58,7 @@ pub async fn create(
     let proj = queries::get_project(&state.pool, req.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, proj.org_id).await? {
-        return Err(AppError::Forbidden("forbidden".to_string()));
-    }
+    queries::require_org_writer(&state.pool, auth.user_id, proj.org_id).await?;
     // Validate edges
     for e in &req.edges {
         if e.parent >= req.jobs.len() || e.child >= req.jobs.len() {
@@ -107,7 +105,14 @@ pub async fn create(
         .fetch_one(&mut *tx)
         .await?;
         if !is_child {
-            let subject = ids::nats_subject(&proj.org_id, &proj.id, &wj.queue_id, priority);
+            let subject = ids::nats_subject_for_shard(
+                &proj.org_id,
+                &proj.id,
+                &wj.queue_id,
+                queue.shard_count,
+                0,
+                priority,
+            );
             let eid = Uuid::new_v4();
             sqlx::query(
                 r#"INSERT INTO outbox_events (id, job_id, queue_id, org_id, project_id, subject, payload, priority, nats_msg_id)

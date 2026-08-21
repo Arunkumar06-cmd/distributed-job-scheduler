@@ -11,7 +11,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use api::{routes, state::AppState};
+use api::{ai_summaries, routes, state::AppState};
 use common::Config;
 
 #[tokio::main]
@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Arc::new(Config::from_env());
-    tracing::info!(config = ?config, "starting api");
+    tracing::info!(api_host = %config.api_host, api_port = config.api_port, ai_summaries_enabled = config.ai_summaries_enabled, "starting api");
     let cors_origin = match std::env::var("CORS_ALLOWED_ORIGIN") {
         Ok(origin) => origin,
         Err(_) if std::env::var("RUST_ENV").as_deref() == Ok("production") => {
@@ -104,46 +104,9 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("scheduler spawned");
     }
 
-    // AI failure summaries (bonus §8, async outside correctness path)
-    {
-        let pool_ai = pool.clone();
-        let sd_ai = shutdown.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-            loop {
-                interval.tick().await;
-                if sd_ai.is_cancelled() {
-                    break;
-                }
-                let pending: Vec<(uuid::Uuid,)> = sqlx::query_as(
-                    r#"SELECT dlq.id FROM dead_letter_entries dlq LEFT JOIN failure_summaries fs ON fs.dlq_id = dlq.id WHERE fs.id IS NULL LIMIT 5"#,
-                )
-                .fetch_all(&pool_ai)
-                .await
-                .unwrap_or_default();
-                for (dlq_id,) in pending {
-                    // Mock LLM: in prod would call OpenAI API, here deterministic template
-                    let summary = "Downstream service repeatedly returned error. Job exhausted retries via exponential backoff. Likely dependency outage.";
-                    let root = "External dependency failure (503/timeout)";
-                    let remediation =
-                        "Inspect downstream health, then POST /dlq/:id/replay after fix.";
-                    let _ = sqlx::query(
-                        r#"INSERT INTO failure_summaries (dlq_id, job_id, summary, root_cause, remediation, model)
-                           SELECT id, job_id, $2, $3, $4, 'mock-llm' FROM dead_letter_entries WHERE id = $1
-                           ON CONFLICT (dlq_id) DO NOTHING"#,
-                    )
-                    .bind(dlq_id)
-                    .bind(summary)
-                    .bind(root)
-                    .bind(remediation)
-                    .execute(&pool_ai)
-                    .await;
-                    tracing::info!(dlq_id = %dlq_id, "generated AI failure summary (mock)");
-                }
-            }
-        });
-        tracing::info!("AI summarizer spawned (mock)");
-    }
+    // Optional, non-critical OpenAI Responses integration. Scheduling does not
+    // depend on this task; it runs only when explicitly configured.
+    ai_summaries::spawn(pool.clone(), config.clone(), shutdown.clone());
 
     // Build router
     let app = Router::new()
@@ -160,6 +123,10 @@ async fn main() -> anyhow::Result<()> {
             post(routes::organizations::create).get(routes::organizations::list),
         )
         .route("/organizations/:id", get(routes::organizations::get))
+        .route(
+            "/organizations/:id/members",
+            post(routes::organizations::upsert_membership),
+        )
         // projects
         .route(
             "/projects",
@@ -198,12 +165,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/jobs/:id/logs", get(routes::logs::list))
         .route("/dlq", get(routes::dlq::list))
         .route("/dlq/:id/replay", post(routes::dlq::replay))
+        .route("/dlq/:id/summary", get(routes::dlq::summary))
         .route("/batches", get(routes::batches::list))
         .route("/batches/:id", get(routes::batches::get))
         .route("/workflows", post(routes::workflows::create))
         .route("/workflows/:id", get(routes::workflows::get))
-        // Live event fan-out is intentionally disabled until events carry organization
-        // ownership and can be filtered per connection.
+        // Live updates are scoped to an authorized project; no process-wide event
+        // broadcast is exposed to a tenant.
+        .route("/events/stream", get(routes::events::sse_handler))
+        .route("/events/ws", get(routes::events::ws_handler))
         .with_state(state)
         .layer(
             CorsLayer::new()

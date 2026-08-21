@@ -27,6 +27,9 @@ pub enum AppError {
     #[error("queue at capacity")]
     QueueAtCapacity,
 
+    #[error("rate limit exceeded: {0}")]
+    RateLimited(String),
+
     #[error("stale lease (fenced worker)")]
     StaleLease,
 
@@ -70,6 +73,7 @@ impl AppError {
             AppError::Validation(_) => ErrorCode::Validation,
             AppError::QueuePaused => ErrorCode::QueuePaused,
             AppError::QueueAtCapacity => ErrorCode::QueueAtCapacity,
+            AppError::RateLimited(_) => ErrorCode::RateLimited,
             AppError::StaleLease => ErrorCode::StaleLease,
             AppError::Internal(_)
             | AppError::Sqlx(_)
@@ -90,6 +94,7 @@ pub enum ErrorCode {
     Validation,
     QueuePaused,
     QueueAtCapacity,
+    RateLimited,
     StaleLease,
     Internal,
 }
@@ -117,6 +122,7 @@ impl IntoResponse for AppError {
             AppError::QueuePaused | AppError::QueueAtCapacity | AppError::StaleLease => {
                 StatusCode::CONFLICT
             }
+            AppError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let request_id = Uuid::new_v4().to_string();

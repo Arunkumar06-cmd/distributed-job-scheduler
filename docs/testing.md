@@ -69,6 +69,24 @@ It ramps from 10 to 100 virtual users and requires more than 99% `202 Accepted`
 responses. The 2026-08-21 local run completed 11,100 accepted submissions at
 219 jobs/s, with p95 166 ms and p99 below 200 ms.
 
+## Bonus-feature verification
+
+- **RBAC**: add a viewer through `POST /organizations/:id/members`; read
+  endpoints return `200`, while queue creation, pause/resume, and job creation
+  return `403`. Repeat with a member and admin to verify the write/admin split.
+- **Rate limiting**: create a queue with `rate_limit: 2` and
+  `rate_window_secs: 60`; the third submission must return `429 RateLimited`.
+- **Workflow DAG**: create `A,B -> C`; verify C stays `WAITING` until both A
+  and B complete, then receives an outbox event and reaches `COMPLETED`.
+- **Queue sharding**: create a queue with `shard_count: 4`, submit jobs with
+  stable idempotency keys, and verify `jobs.shard_id` is 0–3 and NATS subjects
+  contain the corresponding `shard.{id}` token.
+- **Live updates**: connect with a Bearer token to `/events/stream?project_id=`
+  or `/events/ws?project_id=`; a user outside that organization receives `403`.
+- **AI summaries**: configure `AI_SUMMARIES_ENABLED=true` and `OPENAI_API_KEY`,
+  generate a DLQ entry, then verify `GET /dlq/:id/summary` returns a stored
+  provider model result. Do not use credentials in test fixtures or logs.
+
 ## Test Evidence (2026-08-20 run)
 
 - Full workspace suite: 12/12 tests passed against PostgreSQL 18.

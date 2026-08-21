@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use validator::Validate;
 
 use crate::middleware::AuthUser;
@@ -18,6 +18,28 @@ pub struct CreateOrgReq {
     pub name: String,
     #[validate(length(min = 2, max = 50))]
     pub slug: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpsertMembershipReq {
+    pub user_id: Uuid,
+    #[validate(custom(function = "valid_org_role"))]
+    pub role: String,
+}
+
+fn valid_org_role(role: &str) -> Result<(), validator::ValidationError> {
+    if matches!(role, "admin" | "member" | "viewer") {
+        Ok(())
+    } else {
+        Err(validator::ValidationError::new("invalid_role"))
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct MembershipResponse {
+    pub org_id: Uuid,
+    pub user_id: Uuid,
+    pub role: String,
 }
 
 pub async fn create(
@@ -57,4 +79,24 @@ pub async fn get(
             .await?;
     let org = org.ok_or_else(|| AppError::NotFound("organization not found".to_string()))?;
     Ok(Json(serde_json::json!(org)))
+}
+
+pub async fn upsert_membership(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(org_id): Path<Uuid>,
+    Json(req): Json<UpsertMembershipReq>,
+) -> AppResult<Json<MembershipResponse>> {
+    req.validate()
+        .map_err(|error| AppError::Validation(error.to_string()))?;
+    queries::require_org_admin(&state.pool, auth.user_id, org_id).await?;
+    queries::find_user_by_id(&state.pool, req.user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("user not found".to_string()))?;
+    queries::upsert_org_membership(&state.pool, org_id, req.user_id, &req.role).await?;
+    Ok(Json(MembershipResponse {
+        org_id,
+        user_id: req.user_id,
+        role: req.role,
+    }))
 }

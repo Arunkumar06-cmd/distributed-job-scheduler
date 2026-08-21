@@ -39,6 +39,10 @@ mod integration_tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::raw_sql(include_str!("../migrations/0007_queue_sharding.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
         // Clean (keep capacity_tokens etc, but truncate hot tables)
         sqlx::raw_sql("TRUNCATE jobs, outbox_events, dead_letter_entries, job_executions, job_logs, workflow_edges, edge_satisfaction, workflows, capacity_tokens, queue_rate_buckets, failure_summaries, scheduled_occurrences, scheduled_jobs, queues, projects, organizations, users, workers CASCADE").execute(&pool).await.ok();
         pool
@@ -87,6 +91,7 @@ mod integration_tests {
             org_id: org,
             project_id: proj,
             batch_id: None,
+            shard_id: 0,
             kind: JobKind::Immediate,
             payload: serde_json::json!({"type":"echo"}),
             priority: 5,
@@ -106,6 +111,7 @@ mod integration_tests {
             org_id: org,
             project_id: proj,
             batch_id: None,
+            shard_id: 0,
             kind: JobKind::Immediate,
             payload: serde_json::json!({"type":"echo"}),
             priority: 5,
@@ -145,6 +151,7 @@ mod integration_tests {
             org_id: org,
             project_id: proj,
             batch_id: None,
+            shard_id: 0,
             kind: JobKind::Immediate,
             payload: serde_json::json!({"type":"echo"}),
             priority: 5,
@@ -248,6 +255,7 @@ mod integration_tests {
             org_id: org,
             project_id: proj,
             batch_id: None,
+            shard_id: 0,
             kind: JobKind::Immediate,
             payload: serde_json::json!({"type":"echo","k":k}),
             priority: 5,

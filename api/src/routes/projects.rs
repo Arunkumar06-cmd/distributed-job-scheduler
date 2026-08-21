@@ -29,11 +29,7 @@ pub async fn create(
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, req.org_id).await? {
-        return Err(AppError::Forbidden(
-            "not a member of this organization".to_string(),
-        ));
-    }
+    queries::require_org_admin(&state.pool, auth.user_id, req.org_id).await?;
     let proj = queries::create_project(
         &state.pool,
         req.org_id,

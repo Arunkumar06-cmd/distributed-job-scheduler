@@ -29,6 +29,8 @@ pub struct CreateQueueReq {
     #[validate(range(min = 1, max = 10000))]
     pub rate_limit: Option<i32>,
     pub rate_window_secs: Option<i32>,
+    #[validate(range(min = 1, max = 128))]
+    pub shard_count: Option<i32>,
 }
 
 pub async fn create(
@@ -41,9 +43,7 @@ pub async fn create(
     let proj = queries::get_project(&state.pool, req.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, proj.org_id).await? {
-        return Err(AppError::Forbidden("not authorized".to_string()));
-    }
+    queries::require_org_admin(&state.pool, auth.user_id, proj.org_id).await?;
     let mut q = queries::create_queue(
         &state.pool,
         req.project_id,
@@ -56,13 +56,14 @@ pub async fn create(
         req.retry_policy_id,
     )
     .await?;
-    if req.rate_limit.is_some() || req.rate_window_secs.is_some() {
+    if req.rate_limit.is_some() || req.rate_window_secs.is_some() || req.shard_count.is_some() {
         q = sqlx::query_as::<_, db::models::Queue>(
-            r#"UPDATE queues SET rate_limit = COALESCE($2, rate_limit), rate_window_secs = COALESCE($3, rate_window_secs) WHERE id = $1 RETURNING *"#,
+            r#"UPDATE queues SET rate_limit = COALESCE($2, rate_limit), rate_window_secs = COALESCE($3, rate_window_secs), shard_count = COALESCE($4, shard_count) WHERE id = $1 RETURNING *"#,
         )
         .bind(q.id)
         .bind(req.rate_limit)
         .bind(req.rate_window_secs)
+        .bind(req.shard_count)
         .fetch_one(&state.pool)
         .await?;
     }
@@ -74,7 +75,7 @@ pub async fn create(
             format!("JOBS_{}_{}_{}", proj.org_id, req.project_id, q.id).replace('-', "_");
         // Use hierarchical subject: org.{org_id}.proj.{project_id}.queue.{queue_id}.*
         let subject = format!(
-            "org.{}.proj.{}.queue.{}.*",
+            "org.{}.proj.{}.queue.{}.>",
             proj.org_id, req.project_id, q.id
         );
         let _ = js
@@ -121,9 +122,7 @@ pub async fn get(
     let proj = queries::get_project(&state.pool, q.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
-    if !queries::user_in_org(&state.pool, auth.user_id, proj.org_id).await? {
-        return Err(AppError::Forbidden("forbidden".to_string()));
-    }
+    queries::require_org_admin(&state.pool, auth.user_id, proj.org_id).await?;
     Ok(Json(serde_json::json!(q)))
 }
 

@@ -33,6 +33,15 @@ PostgreSQL ── transactional outbox ──► NATS JetStream ──► worker
         └── queues · jobs · executions · logs · retries · DLQ · schedules
 ```
 
+## Architecture at a glance
+
+<p align="center">
+  <img src="docs/assets/distributed-job-scheduler-architecture.png" alt="Architecture showing the React dashboard, Rust API, PostgreSQL, outbox relay, NATS JetStream, worker pool, and job lifecycle" width="100%" />
+</p>
+
+For the component-level design, data-flow narrative, and failure-recovery
+paths, see the [architecture notes](docs/architecture.md).
+
 ## What is included
 
 | Area | Capabilities |

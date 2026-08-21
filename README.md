@@ -79,6 +79,28 @@ Open `http://localhost:3000`, register a user, create an organization and a
 project, then create a queue. The first created user owns the organization and
 project it creates.
 
+If PostgreSQL and NATS JetStream already run on your development machine, the
+application can be started without Compose. Use a fresh local database to keep
+its migration history isolated, then point each process at localhost:
+
+```bash
+createdb job_scheduler_local
+nats-server -js -sd /tmp/job-scheduler-nats -p 4222 -m 8222
+
+DATABASE_URL=postgres://$USER@127.0.0.1:5432/job_scheduler_local \
+NATS_URL=nats://127.0.0.1:4222 \
+JWT_SECRET=dev-secret-change-in-production-please-32bytes \
+cargo run -p api
+
+DATABASE_URL=postgres://$USER@127.0.0.1:5432/job_scheduler_local \
+NATS_URL=nats://127.0.0.1:4222 \
+cargo run -p worker
+```
+
+Run `npm run dev` from `frontend/` in a separate terminal. Do not reuse a
+database whose SQLx migration history belongs to an older checkout: the API
+correctly stops when an applied migration checksum no longer matches.
+
 ## Reliability model
 
 The system deliberately provides **at-least-once delivery**. External handlers

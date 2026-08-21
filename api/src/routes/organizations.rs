@@ -1,0 +1,56 @@
+use axum::{
+    Json, extract::{State, Path},
+    http::StatusCode,
+};
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+use crate::middleware::AuthUser;
+use crate::state::AppState;
+use common::{AppError, AppResult};
+use db::queries;
+use uuid::Uuid;
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct CreateOrgReq {
+    #[validate(length(min = 1, max = 100))]
+    pub name: String,
+    #[validate(length(min = 2, max = 50))]
+    pub slug: String,
+}
+
+pub async fn create(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<CreateOrgReq>,
+) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
+    req.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    let org = queries::create_organization(&state.pool, &req.name, &req.slug, auth.user_id).await?;
+    let _ = state.broadcast.send(format!("org.created:{}", org.id));
+    Ok((StatusCode::CREATED, Json(serde_json::json!(org))))
+}
+
+pub async fn list(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> AppResult<Json<serde_json::Value>> {
+    let orgs = queries::list_organizations_for_user(&state.pool, auth.user_id).await?;
+    Ok(Json(serde_json::json!(orgs)))
+}
+
+pub async fn get(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(org_id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    if !queries::user_in_org(&state.pool, auth.user_id, org_id).await? {
+        return Err(AppError::Forbidden("not a member of this organization".to_string()));
+    }
+    let org: Option<db::models::Organization> =
+        sqlx::query_as("SELECT * FROM organizations WHERE id = $1")
+            .bind(org_id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let org = org.ok_or_else(|| AppError::NotFound("organization not found".to_string()))?;
+    Ok(Json(serde_json::json!(org)))
+}

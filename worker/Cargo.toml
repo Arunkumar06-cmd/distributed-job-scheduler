@@ -1,0 +1,23 @@
+[package]
+name = "worker"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+db = { path = "../db" }
+domain = { path = "../domain" }
+tokio.workspace = true
+async-nats.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+tokio-util.workspace = true
+hostname = "0.4"
+sqlx.workspace = true
+tracing-subscriber.workspace = true

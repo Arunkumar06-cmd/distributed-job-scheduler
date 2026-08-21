@@ -1,0 +1,8 @@
+:root { --bg:#09090b; --panel:#18181b; --border:#27272a; --text:#e4e4e7; --muted:#71717a; }
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{width:100vw;height:100vh;overflow:hidden;background:var(--bg);color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:#27272a;border-radius:999px}
+::-webkit-scrollbar-track{background:#09090b}
+button{cursor:pointer}
+select, input, textarea{background:#09090b;border:1px solid #27272a;color:var(--text)}

@@ -1,0 +1,31 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Distributed Job Scheduler", "version": "0.1.0", "description": "Reliable async job scheduling with Postgres + NATS" },
+  "servers": [{ "url": "http://localhost:8080" }],
+  "components": {
+    "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" } },
+    "schemas": {
+      "Job": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "queue_id": { "type": "string", "format": "uuid" }, "status": { "type": "string", "enum": ["SCHEDULED","QUEUED","CLAIMED","RUNNING","RETRY_WAIT","COMPLETED","FAILED"] }, "payload": { "type": "object" }, "priority": { "type": "integer" }, "attempt": { "type": "integer" } } }
+    }
+  },
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/health": { "get": { "summary": "Health", "responses": { "200": { "description": "ok" } } } },
+    "/auth/register": { "post": { "summary": "Register", "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "email": { "type": "string" }, "password": { "type": "string" }, "display_name": { "type": "string" } } } } } } } },
+    "/auth/login": { "post": { "summary": "Login" } },
+    "/organizations": { "post": { "summary": "Create org" }, "get": { "summary": "List orgs" } },
+    "/projects": { "post": { "summary": "Create project" }, "get": { "summary": "List" } },
+    "/queues": { "post": { "summary": "Create queue" }, "get": { "summary": "List" } },
+    "/queues/{id}/stats": { "get": { "summary": "Queue stats" } },
+    "/queues/{id}/pause": { "post": { "summary": "Pause" } },
+    "/queues/{id}/resume": { "post": { "summary": "Resume" } },
+    "/jobs": { "post": { "summary": "Create job" }, "get": { "summary": "List" } },
+    "/jobs/batch": { "post": { "summary": "Batch" } },
+    "/jobs/{id}": { "get": { "summary": "Get job" } },
+    "/jobs/{id}/retry": { "post": { "summary": "Retry" } },
+    "/scheduled-jobs": { "post": { "summary": "Create scheduled" }, "get": { "summary": "List" } },
+    "/workers": { "get": { "summary": "List workers" } },
+    "/metrics": { "get": { "summary": "Metrics" } },
+    "/events/stream": { "get": { "summary": "SSE stream" } }
+  }
+}

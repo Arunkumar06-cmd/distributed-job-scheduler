@@ -1,0 +1,40 @@
+[package]
+name = "api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+db = { path = "../db" }
+domain = { path = "../domain" }
+outbox = { path = "../outbox" }
+worker = { path = "../worker" }
+scheduler = { path = "../scheduler" }
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-nats.workspace = true
+jsonwebtoken.workspace = true
+argon2.workspace = true
+rand.workspace = true
+validator.workspace = true
+cron.workspace = true
+chrono-tz.workspace = true
+reqwest.workspace = true
+once_cell.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true

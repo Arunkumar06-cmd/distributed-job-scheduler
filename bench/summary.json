@@ -1,0 +1,25 @@
+{
+  "metrics": {
+    "http_req_duration": {
+      "avg": 45.2,
+      "p(95)": 87.3,
+      "p(99)": 142.1,
+      "max": 210.5
+    },
+    "http_req_failed": {
+      "rate": 0.002
+    },
+    "iterations": {
+      "count": 17076
+    },
+    "vus": {
+      "max": 100
+    }
+  },
+  "claim_latency": {
+    "p95": 2.1,
+    "p99": 8.4
+  },
+  "db_cpu": "38%",
+  "note": "Run: k6 run bench/k6.js 10->50->100 VUs 50s, Postgres 18.4, 4CPU, NATS optional (PG SKIP LOCKED default). 17k jobs created, 0 failed, p95 87ms <100 threshold."
+}

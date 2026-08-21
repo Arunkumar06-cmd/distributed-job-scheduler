@@ -1,0 +1,85 @@
+use axum::{
+    Json, extract::{State, Path, Query},
+    http::StatusCode,
+};
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+use crate::middleware::AuthUser;
+use crate::state::AppState;
+use common::{AppError, AppResult};
+use db::queries;
+use uuid::Uuid;
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct CreateProjectReq {
+    #[validate(length(min = 1, max = 100))]
+    pub name: String,
+    #[validate(length(min = 2, max = 50))]
+    pub slug: String,
+    pub description: Option<String>,
+    pub org_id: Uuid,
+}
+
+pub async fn create(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(req): Json<CreateProjectReq>,
+) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
+    req.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+    if !queries::user_in_org(&state.pool, auth.user_id, req.org_id).await? {
+        return Err(AppError::Forbidden("not a member of this organization".to_string()));
+    }
+    let proj = queries::create_project(
+        &state.pool,
+        req.org_id,
+        &req.name,
+        &req.slug,
+        req.description.as_deref().unwrap_or(""),
+        auth.user_id,
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(serde_json::json!(proj))))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListProjectsQuery {
+    pub org_id: Option<Uuid>,
+}
+
+pub async fn list(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Query(q): Query<ListProjectsQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    if let Some(org_id) = q.org_id {
+        if !queries::user_in_org(&state.pool, auth.user_id, org_id).await? {
+            return Err(AppError::Forbidden("not a member".to_string()));
+        }
+        let projects = queries::list_projects_in_org(&state.pool, org_id).await?;
+        Ok(Json(serde_json::json!(projects)))
+    } else {
+        // list all orgs for user then projects
+        let orgs = queries::list_organizations_for_user(&state.pool, auth.user_id).await?;
+        let mut all = Vec::new();
+        for org in orgs {
+            let mut ps = queries::list_projects_in_org(&state.pool, org.id).await?;
+            all.append(&mut ps);
+        }
+        Ok(Json(serde_json::json!(all)))
+    }
+}
+
+pub async fn get(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(project_id): Path<Uuid>,
+) -> AppResult<Json<serde_json::Value>> {
+    let proj = queries::get_project(&state.pool, project_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
+    if !queries::user_in_org(&state.pool, auth.user_id, proj.org_id).await? {
+        return Err(AppError::Forbidden("not authorized".to_string()));
+    }
+    Ok(Json(serde_json::json!(proj)))
+}

@@ -33,6 +33,7 @@ erDiagram
     scheduled_jobs ||--o{ scheduled_occurrences : fires
     scheduled_occurrences o|--o| jobs : creates
     dead_letter_entries ||--o| failure_summaries : summarizes
+    users ||--o{ audit_log : performs
 
     users {
         uuid id PK
@@ -86,6 +87,7 @@ erDiagram
         integer rate_limit
         integer rate_window_secs
         integer shard_count
+    }
     capacity_tokens {
         uuid id PK
         uuid queue_id FK
@@ -186,7 +188,7 @@ erDiagram
         uuid id PK
         uuid queue_id FK
         string name
-        string job_type CHECK
+        string job_type
         string cron_expr
         string timezone
         timestamp run_once_at
@@ -206,15 +208,15 @@ erDiagram
         uuid project_id
         string subject
         string nats_msg_id
-        timestamp published_at
         int publish_attempts
+        timestamp published_at
         timestamp relay_locked_until
     }
     dead_letter_entries {
         uuid id PK
         uuid job_id FK
         uuid queue_id
-        string reason enum
+        string reason
         integer attempt
         string final_error
         jsonb payload
@@ -263,29 +265,33 @@ erDiagram
 - Foreign keys cascade only where the child has no independent audit value
   (for example project memberships and capacity tokens). Job history and DLQ
   rows restrict deletion so execution evidence is retained.
-- Uniqueness constraints enforce user email, organization slug, worker name,
-  queue name within a project, retry-policy name within a project, and a job's
-  `(queue_id, idempotency_key)` pair.
+- Uniqueness constraints enforce case-insensitive user email, organization
+  slug, worker name, queue name within a project, retry-policy name within a
+  project, and a job's `(queue_id, idempotency_key)` pair.
 - The schema is normalized to third normal form. Job retry settings are copied
   at enqueue time so later queue-policy edits do not alter in-flight work.
 
 ## Query-driven indexes
 
 ```sql
-idx_jobs_queue_status     ON jobs(queue_id, status)
-idx_jobs_queued           ON jobs(queue_id, priority DESC, created_at) WHERE status = 'QUEUED'
-idx_jobs_retry            ON jobs(next_retry_at) WHERE status = 'RETRY_WAIT'
-idx_jobs_scheduled        ON jobs(scheduled_for) WHERE status = 'SCHEDULED'
-idx_executions_job_started ON job_executions(job_id, started_at DESC)
-idx_logs_job_time         ON job_logs(job_id, created_at DESC)
-idx_outbox_claim          ON outbox_events(priority DESC, created_at) WHERE published_at IS NULL
-idx_scheduled_active_next ON scheduled_jobs(next_fire_at) WHERE is_active
+idx_jobs_queue_status      ON jobs(queue_id, status)
+idx_jobs_queued            ON jobs(queue_id, priority DESC, created_at) WHERE status = 'QUEUED'
+idx_jobs_retry             ON jobs(next_retry_at) WHERE status = 'RETRY_WAIT'
+idx_jobs_scheduled         ON jobs(scheduled_for) WHERE status = 'SCHEDULED'
+idx_jobs_waiting           ON jobs(queue_id) WHERE status = 'WAITING'
 idx_jobs_queue_shard_status ON jobs(queue_id, shard_id, status)
-idx_jobs_waiting            ON jobs(queue_id) WHERE status = 'WAITING'
-idx_jobs_queue_created_at   ON jobs(queue_id, created_at DESC)
-idx_outbox_job              ON outbox_events(job_id)
-idx_audit_actor_time        ON audit_log(actor_id, created_at DESC)
+idx_jobs_queue_created_at  ON jobs(queue_id, created_at DESC)
+idx_executions_job_started ON job_executions(job_id, started_at DESC)
+idx_logs_job_time          ON job_logs(job_id, created_at DESC)
+idx_outbox_claim           ON outbox_events(priority DESC, created_at) WHERE published_at IS NULL
+idx_outbox_job             ON outbox_events(job_id)
+idx_scheduled_active_next  ON scheduled_jobs(next_fire_at) WHERE is_active
+idx_audit_actor_time       ON audit_log(actor_id, created_at DESC)
 ```
+
+The partial indexes keep queue-claim, retry, scheduler, and outbox scans small;
+`SKIP LOCKED` and short transactions prevent competing workers from blocking
+each other on hot paths.
 
 ## Lifecycle and cold storage
 
@@ -303,7 +309,3 @@ twins (un-replayed DLQ entries are operational state and block archival).
 Measured throughput: **~4,500 rows/s** with 500-row batches
 (`db/tests/archive_bench.rs`). Heartbeats and job logs have independent
 retention pruners; the scheduler runs all housekeeping each tick.
-
-The partial indexes keep queue-claim, retry, scheduler, and outbox scans small;
-`SKIP LOCKED` and short transactions prevent competing workers from blocking
-each other on hot paths.

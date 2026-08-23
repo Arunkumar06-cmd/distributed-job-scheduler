@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { Modal } from './Modals'
 import { api } from '../lib/api'
-import { short, dt } from '../lib/format'
+import { short, dt, cap } from '../lib/format'
 
 export function DlqPanel({ q, auth, note, onChanged }) {
   const [entries, setEntries] = useState([])

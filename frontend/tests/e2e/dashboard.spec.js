@@ -44,6 +44,23 @@ async function createWorkspace(page) {
   await qDialog.getByLabel('Name', { exact: true }).fill(QUEUE_NAME)
   await qDialog.getByRole('button', { name: 'Create queue' }).click()
   await expect(page.getByText(/created successfully/)).toBeVisible()
+  page.on('console', c => { const t=c.text(); if(t.includes('401')||t.includes('session')) console.log('PAGE-NET:', t.slice(0,160)) })
+  await page.waitForTimeout(1500)
+  console.log('TOKEN-LEN:', ((await page.evaluate(() => localStorage.getItem('token'))) || '').length)
+  const queuesState = await page.evaluate(async () => {
+    const tok = localStorage.getItem('token')
+    const r = await fetch('/api/v1/queues?project_id=' + document.querySelectorAll('select')[1]?.value, { headers: { authorization: 'Bearer ' + tok } })
+    return { status: r.status, body: (await r.text()).slice(0, 150) }
+  })
+  console.log('DIRECT-FETCH:', JSON.stringify(queuesState))
+  const cnt = await page.locator('.queue-list .queue').count()
+  console.log('DBG-COUNT:', cnt)
+  if (!cnt) {
+    console.log('DBG-SIDEBAR:', (await page.locator('.queue-list').innerHTML()).slice(0,300))
+    console.log('DBG-SELECTS:', await page.locator('select').count())
+    const projNow = await page.evaluate(() => fetch('/api/v1/projects?org_id=' + document.querySelector('select')?.value, { headers: { authorization: 'Bearer ' + localStorage.getItem('token') } }).then(r => r.status + ':' + r.text().then(t => t.slice(0, 120)))).catch(e => String(e))
+    console.log('DBG-PROJFETCH:', JSON.stringify(projNow))
+  }
 }
 
 test.describe('dashboard e2e', () => {
@@ -148,4 +165,21 @@ test('websocket stream delivers authenticated project snapshots', async ({ page 
   }), { pid: projectId, tok: token })
   expect(frame.type).toBe('project.snapshot')
   expect(frame.counts).toBeTruthy()
+})
+
+test('metric cards populate with real values (no NaN, no silent zeros)', async ({ page }) => {
+  await register(page)
+  await createWorkspace(page)
+  await page.getByRole('button', { name: 'Create job' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.locator('textarea').fill('{ "type": "echo" }')
+  await dialog.getByRole('button', { name: 'Submit job' }).click()
+  // Worker completes it; success-rate must become a number, never NaN.
+  await expect(page.locator('.metrics article', { hasText: 'Success rate' }).locator('b')).toHaveText(/\d+%/, { timeout: 20_000 })
+  const avg = await page.locator('.metrics article', { hasText: 'Avg duration' }).locator('b').textContent()
+  expect(avg).not.toContain('NaN')
+  // Lifecycle Done counter must match reality (>=1), proving stats fallback.
+  await expect
+    .poll(async () => Number(await page.locator('.lc-stage', { hasText: 'Done' }).locator('b').textContent()), { timeout: 20_000 })
+    .toBeGreaterThanOrEqual(1)
 })

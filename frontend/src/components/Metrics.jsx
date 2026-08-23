@@ -1,6 +1,10 @@
 import React from 'react'
-export function Metric({ x, y, d, c }) {
-  return <article className={c}><span>{x}</span><b>{Number(y).toLocaleString()}</b>{d && <small>{d}</small>}</article>
+export function Metric({ x, y, suffix = "", d, c }) {
+  const n = Number(y)
+  const shown = Number.isFinite(n)
+    ? (suffix === "%" ? n.toFixed(0) : n.toLocaleString()) + suffix
+    : String(y ?? "—")
+  return <article className={c}><span>{x}</span><b>{shown}</b>{d && <small>{d}</small>}</article>
 }
 export function QueueCharts({ stats, maxConcurrency }) {
   const states = [['Queued',stats.queued||0,'queued'],['Running',stats.running||0,'running'],['Retrying',stats.retry_wait||0,'retrying'],['Completed',stats.completed||0,'completed'],['Failed',stats.failed||0,'failed']]

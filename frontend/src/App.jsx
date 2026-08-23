@@ -24,13 +24,28 @@ function Dashboard({auth}){
   const[live,setLive]=useState(false),[recent,setRecent]=useState([])
 
   useEffect(()=>{const expire=()=>auth.logout();window.addEventListener('jobflow:session-expired',expire);return()=>window.removeEventListener('jobflow:session-expired',expire)},[auth])
-  const loadOrgs=useCallback(async()=>{const x=await api('/organizations',{},auth.token);setOrgs(x);setOrg(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token])
-  const loadProjects=useCallback(async()=>{if(!org){setProjects([]);setProject('');return}const x=await api(`/projects?org_id=${org}`,{},auth.token);setProjects(x);setProject(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token,org])
-  const loadQueues=useCallback(async()=>{if(!project){setQueues([]);setQueue('');return}const x=await api(`/queues?project_id=${project}`,{},auth.token);setQueues(x);setQueue(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token,project])
-  const refresh=async()=>{await Promise.all([loadOrgs(),loadProjects(),loadQueues()])}
-  useEffect(()=>{loadOrgs().catch(e=>setNote({e:1,t:e.message}))},[loadOrgs])
-  useEffect(()=>{loadProjects().catch(e=>setNote({e:1,t:e.message}))},[loadProjects])
-  useEffect(()=>{loadQueues().catch(e=>setNote({e:1,t:e.message}))},[loadQueues])
+  // One authoritative loader: fetches the chain and commits selections
+  // atomically, eliminating stale-closure races after modal creations.
+  const refreshAll=useCallback(async(sel={})=>{
+    try{
+      const orgs=await api('/organizations',{},auth.token)
+      setOrgs(orgs)
+      const orgId = sel.orgId ?? (orgs.some(o=>o.id===org)?org:(orgs[0]?.id||''))
+      setOrg(orgId)
+      let projects=[]
+      if(orgId){ projects=await api(`/projects?org_id=${orgId}`,{},auth.token) }
+      setProjects(projects)
+      const projectId = sel.projectId ?? (projects.some(p=>p.id===project)?project:(projects[0]?.id||''))
+      setProject(projectId)
+      let qs=[]
+      if(projectId){ qs=await api(`/queues?project_id=${projectId}`,{},auth.token) }
+      setQueues(qs)
+      const queueId = sel.queueId ?? (qs.some(x=>x.id===queue)?queue:(qs[0]?.id||''))
+      setQueue(queueId)
+    }catch(e){ setNote({e:1,t:e.message}) }
+  },[auth.token,org,project,queue])
+  const refresh=(sel={})=>refreshAll(sel)
+  useEffect(()=>{refreshAll().catch(e=>setNote({e:1,t:e.message}))},[auth.token])
 
   useEffect(()=>{const f=async()=>{setWorkers(await api('/workers',{},auth.token).catch(()=>[]))};f();const i=setInterval(f,8000);return()=>clearInterval(i)},[auth.token])
   useEffect(()=>{const f=async()=>{try{await api('/health');setHealthy(true)}catch{setHealthy(false)}};f();const i=setInterval(f,15000);return()=>clearInterval(i)},[])
@@ -96,11 +111,26 @@ function Dashboard({auth}){
       </aside>
       <main>{q?<QueueView q={q} stats={stats[queue]||{}} auth={auth} refresh={refresh} note={setNote} recent={recent}/>:<Welcome orgs={orgs} projects={projects} open={setModal}/>}</main>
     </div>
-    {modal&&<EntityForm type={modal} auth={auth} org={org} project={project} close={()=>setModal(null)} done={async l=>{setModal(null);await refresh();setNote({t:l+' created successfully.'})}}/>}
+    {modal&&<EntityForm type={modal} auth={auth} org={org} project={project} close={()=>setModal(null)} done={async (l,made)=>{setModal(null);await refresh(made||{});setNote({t:l+' created successfully.'})}}/>}
   </div>
 }
 
-function QueueView({q,stats,auth,refresh,note,recent}){
+function QueueView({q,stats:initialStats,auth,refresh,note,recent}){
+  const [qst,setQst]=useState(initialStats||{})
+  // Authoritative per-queue stats: fetched here so cards/charts can never be
+  // zero while jobs exist, independent of the dashboard-level batch poll.
+  useEffect(()=>{
+    let alive=true
+    const load=async()=>{
+      try{
+        const s2=await api(`/queues/${q.id}/stats`,{},auth.token)
+        if(alive&&s2)setQst(s2)
+      }catch{/* keep last good */}
+    }
+    load()
+    const i=setInterval(load,5000)
+    return()=>{alive=false;clearInterval(i)}
+  },[q.id,auth.token])
   const[jobs,setJobs]=useState([]),[filter,setFilter]=useState(''),[search,setSearch]=useState(''),[job,setJob]=useState(null)
   const[logs,setLogs]=useState([]),[create,setCreate]=useState(false),[loading,setLoading]=useState(true)
   const[updated,setUpdated]=useState(null),[page,setPage]=useState(1),[total,setTotal]=useState(0),[totalPages,setTotalPages]=useState(1)
@@ -155,35 +185,35 @@ function QueueView({q,stats,auth,refresh,note,recent}){
       </div>
     </div>
     <div className="metrics">
-      <Metric x="Queued" y={stats.queued||0} c="blue"/>
-      <Metric x="Running" y={stats.running||0} d={`${stats.running||0} of ${q.max_concurrency} capacity`} c="purple"/>
-      <Metric x="Completed" y={stats.completed||0} c="green"/>
-      <Metric x="Needs attention" y={(stats.failed||0)+(stats.dlq||0)} d={`${stats.dlq||0} in DLQ`} c="red"/>
+      <Metric x="Queued" y={qst.queued||0} c="blue"/>
+      <Metric x="Running" y={qst.running||0} d={`${qst.running||0} of ${q.max_concurrency} capacity`} c="purple"/>
+      <Metric x="Completed" y={qst.completed||0} c="green"/>
+      <Metric x="Needs attention" y={(qst.failed||0)+(qst.dlq||0)} d={`${qst.dlq||0} in DLQ`} c="red"/>
     </div>
-    <LifecycleStrip s={stats} onStageClick={(st)=>{setTab('jobs');setSearch('');setFilter(st||'')}}/>
+    <LifecycleStrip s={qst} onStageClick={(st)=>{setTab('jobs');setSearch('');setFilter(st||'')}}/>
     <div className="metrics">
-      <Metric x="Success rate · 24h" y={Number.isFinite(+tp?.success_rate_24h) ? `${tp.success_rate_24h}%` : '—'} c="green"/>
-      <Metric x="Avg duration · 24h" y={Number.isFinite(+tp?.avg_duration_ms_24h) ? `${Math.round(tp.avg_duration_ms_24h)} ms` : '—'} c="blue"/>
-      <Metric x="Scheduled" y={stats.scheduled||0} d="waiting for their moment" c="purple"/>
-      <Metric x="In retry wait" y={stats.retry_wait||0} d="backing off before next attempt" c="purple"/>
+      <Metric x="Success rate · 24h" y={tp?.success_rate_24h} suffix="%" c="green"/>
+      <Metric x="Avg duration · 24h" y={tp?.avg_duration_ms_24h} suffix=" ms" c="blue"/>
+      <Metric x="Scheduled" y={qst.scheduled||0} d="waiting for their moment" c="purple"/>
+      <Metric x="In retry wait" y={qst.retry_wait||0} d="backing off before next attempt" c="purple"/>
     </div>
     <div className="charts-row">
       <ThroughputChart buckets={tp?.buckets||[]}/>
       <StatusDonut
         onSegmentClick={(k)=>{setTab('jobs');setSearch('');setFilter(k)}}
         counts={{
-          RUNNING:stats.running,QUEUED:stats.queued,COMPLETED:stats.completed,
-          RETRY_WAIT:stats.retry_wait,FAILED:stats.failed,SCHEDULED:stats.scheduled,CLAIMED:stats.claimed,
+          RUNNING:qst.running,QUEUED:qst.queued,COMPLETED:qst.completed,
+          RETRY_WAIT:qst.retry_wait,FAILED:qst.failed,SCHEDULED:qst.scheduled,CLAIMED:qst.claimed,
         }}
-        total={(stats.queued||0)+(stats.running||0)+(stats.completed||0)+(stats.failed||0)+(stats.retry_wait||0)+(stats.scheduled||0)+(stats.claimed||0)}
+        total={(qst.queued||0)+(qst.running||0)+(qst.completed||0)+(qst.failed||0)+(qst.retry_wait||0)+(qst.scheduled||0)+(qst.claimed||0)}
       />
       <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
-        <QueueCharts stats={stats} maxConcurrency={q.max_concurrency}/>
+        <QueueCharts stats={qst} maxConcurrency={q.max_concurrency}/>
       </div>
     </div>
     <nav className="tabs" role="tablist" aria-label="Queue views">
       <button role="tab" aria-selected={tab==='jobs'} className={tab==='jobs'?'on':''} onClick={()=>setTab('jobs')}>Jobs</button>
-      <button role="tab" aria-selected={tab==='dlq'} className={tab==='dlq'?'on':''} onClick={()=>setTab('dlq')}>Dead letters{stats.dlq?` (${stats.dlq})`:''}</button>
+      <button role="tab" aria-selected={tab==='dlq'} className={tab==='dlq'?'on':''} onClick={()=>setTab('dlq')}>Dead letters{qst.dlq?` (${qst.dlq})`:''}</button>
     </nav>
     <div className="grid">
       {tab==='jobs'?<>

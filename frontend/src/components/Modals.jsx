@@ -25,10 +25,11 @@ export function EntityForm({ type, auth, org, project, close, done }) {
   const submit = async e => {
     e.preventDefault(); setBusy(true)
     try {
-      if (type==='organization') await api('/organizations',{method:'POST',body:JSON.stringify({name,slug:s||slug(name)})},auth.token)
-      if (type==='project') await api('/projects',{method:'POST',body:JSON.stringify({org_id:org,name,slug:s||slug(name)})},auth.token)
-      if (type==='queue') await api('/queues',{method:'POST',body:JSON.stringify({project_id:project,name,max_concurrency:Number(n)})},auth.token)
-      done(label)
+      let id
+      if (type==='organization'){ const r=await api('/organizations',{method:'POST',body:JSON.stringify({name,slug:s||slug(name)})},auth.token); id=r.id }
+      if (type==='project'){ const r=await api('/projects',{method:'POST',body:JSON.stringify({org_id:org,name,slug:s||slug(name)})},auth.token); id=r.id }
+      if (type==='queue'){ const r=await api('/queues',{method:'POST',body:JSON.stringify({project_id:project,name,max_concurrency:Number(n)})},auth.token); id=r.id }
+      done(label,{kind:type,id})
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
   return <Modal title={label} close={close}>

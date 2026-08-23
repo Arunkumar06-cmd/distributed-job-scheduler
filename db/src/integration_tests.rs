@@ -19,7 +19,6 @@ mod integration_tests {
 
         let admin = sqlx::PgPool::connect(&admin_url).await.unwrap();
 
-
         sqlx::query(&format!(r#"CREATE DATABASE "{dbname}""#))
             .execute(&admin)
             .await

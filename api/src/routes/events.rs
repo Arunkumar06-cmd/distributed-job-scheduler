@@ -50,7 +50,8 @@ async fn project_snapshot(state: &AppState, project_id: Uuid) -> serde_json::Val
     for (status, count) in rows {
         counts.insert(status, serde_json::json!(count));
     }
-    serde_json::json!({"type":"project.snapshot", "project_id":project_id, "counts":counts})
+    let recent = db::queries::recent_activity(&state.pool, 8).await.unwrap_or_default();
+    serde_json::json!({"type":"project.snapshot", "project_id":project_id, "counts":counts, "recent":recent})
 }
 
 /// Authenticated, tenant-scoped server-sent snapshots. The stream deliberately

@@ -659,6 +659,87 @@ pub async fn count_jobs_for_user(
     Ok(row.0)
 }
 
+/// Per-minute completion/failure buckets for the trailing window, zero-filled,
+/// plus 24h success rate and average duration for the header metrics.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct ThroughputBucket {
+    pub bucket: String,
+    pub completed: i64,
+    pub failed: i64,
+}
+
+pub async fn queue_throughput(
+    pool: &PgPool,
+    queue_id: Uuid,
+    minutes: i32,
+) -> AppResult<(Vec<ThroughputBucket>, f64, f64)> {
+    let buckets = sqlx::query_as::<_, ThroughputBucket>(
+        r#"WITH span AS (
+             SELECT generate_series(
+                      date_trunc('minute', NOW()) - make_interval(mins => $2),
+                      date_trunc('minute', NOW()),
+                      '1 minute') AS m
+           )
+           SELECT to_char(span.m, 'HH24:MI') AS bucket,
+                  COALESCE(COUNT(e.id) FILTER (WHERE e.status = 'COMPLETED'), 0)::int8 AS completed,
+                  COALESCE(COUNT(e.id) FILTER (WHERE e.status IN ('FAILED','ABANDONED')), 0)::int8 AS failed
+           FROM span
+           LEFT JOIN job_executions e
+             ON date_trunc('minute', e.finished_at) = span.m
+            AND e.job_id IN (SELECT id FROM jobs WHERE queue_id = $1)
+           GROUP BY span.m ORDER BY span.m"#,
+    )
+    .bind(queue_id)
+    .bind(minutes.clamp(5, 240))
+    .fetch_all(pool)
+    .await?;
+
+    let day: (i64, i64, f64) = sqlx::query_as(
+        r#"SELECT
+             COUNT(*) FILTER (WHERE e.status = 'COMPLETED')::int8,
+             COUNT(*) FILTER (WHERE e.status IN ('FAILED','ABANDONED'))::int8,
+             COALESCE(AVG(e.duration_ms), 0)::float8
+           FROM job_executions e
+           JOIN jobs j ON j.id = e.job_id
+           WHERE j.queue_id = $1 AND e.started_at > NOW() - INTERVAL '24 hours'"#,
+    )
+    .bind(queue_id)
+    .fetch_one(pool)
+    .await?;
+
+    let (done_n, bad_n, avg_ms_raw) = day;
+    let total = done_n + bad_n;
+    let rate = if total > 0 { done_n as f64 * 100.0 / total as f64 } else { 100.0 };
+    let avg_ms = avg_ms_raw;
+    Ok((buckets, rate, avg_ms))
+}
+
+/// Latest terminal/retry events for the live activity ticker.
+pub async fn recent_activity(pool: &PgPool, limit: i64) -> AppResult<Vec<serde_json::Value>> {
+    let rows = sqlx::query_as::<_, crate::models::Job>(
+        r#"SELECT * FROM jobs
+           WHERE status IN ('COMPLETED','FAILED','RETRY_WAIT','CANCELLED')
+           ORDER BY COALESCE(completed_at, failed_at, updated_at) DESC
+           LIMIT $1"#,
+    )
+    .bind(limit.clamp(1, 20))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|j| {
+            serde_json::json!({
+                "id": j.id,
+                "queue_id": j.queue_id,
+                "type": j.payload.get("type").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                "status": j.status.as_str(),
+                "attempt": j.attempt,
+                "at": j.updated_at,
+            })
+        })
+        .collect())
+}
+
 // =========================================================
 // WORKER REGISTRATION + HEARTBEAT
 // =========================================================

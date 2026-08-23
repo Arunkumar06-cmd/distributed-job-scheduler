@@ -3149,6 +3149,82 @@
           }
         }
       }
+    },
+    "/queues/{id}/throughput": {
+      "get": {
+        "summary": "Throughput time-series + quality metrics",
+        "tags": [
+          "queues"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "minutes",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 240,
+              "default": 30
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-minute buckets + 24h success rate and average duration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queue_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "minutes": {
+                      "type": "integer"
+                    },
+                    "buckets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bucket": {
+                            "type": "string"
+                          },
+                          "completed": {
+                            "type": "integer"
+                          },
+                          "failed": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    },
+                    "success_rate_24h": {
+                      "type": "number"
+                    },
+                    "avg_duration_ms_24h": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
     }
   }
 }

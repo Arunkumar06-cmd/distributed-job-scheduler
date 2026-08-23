@@ -16,11 +16,12 @@ export function JobsPanel({ jobs, loading, total, totalPages, page, setPage, pag
       <table>
         <thead><tr><th scope="col">Job</th><th scope="col">Status</th><th scope="col">Attempts</th><th scope="col">Created</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
         <tbody>
-          {loading && !jobs.length && <tr><td colSpan="5" className="empty-cell">Loading jobs…</td></tr>}
+          {loading && !jobs.length && Array.from({length:4}).map((_,i)=>(
+            <tr key={`sk${i}`}><td colSpan="5" style={{padding:'6px 10px'}}><div className="skel"/></td></tr>))}
           {jobs.map(x =>
             <tr key={x.id}>
               <td><button className="job" onClick={() => onInspect(x)}><b>{short(x.id)}</b><span>{x.idempotency_key || 'No idempotency key'}</span></button></td>
-              <td><em className={String(x.status).toLowerCase()}>{cap(x.status)}</em></td>
+              <td><em className={String(x.status).toLowerCase()} title={{QUEUED:"Waiting for a worker to claim it",CLAIMED:"A worker has reserved this job",RUNNING:"Executing right now",RETRY_WAIT:"Failed — backing off before the next attempt",COMPLETED:"Finished successfully",FAILED:"Out of attempts",SCHEDULED:"Will start at its scheduled time",WAITING:"Blocked until upstream workflow jobs finish"}[x.status] || cap(x.status)}>{cap(x.status)}</em></td>
               <td>{x.attempt || 0} <span className="muted">/ {x.max_attempts || 1}</span></td>
               <td className="muted">{dt(x.created_at)}</td>
               <td>

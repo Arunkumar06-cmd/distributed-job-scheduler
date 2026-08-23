@@ -50,6 +50,11 @@ async function blur(page) {
   await page.evaluate(() => document.activeElement?.blur())
 }
 
+test.beforeEach(async ({ page }) => {
+  // Baselines must be immune to background SSE frames / polling timers.
+  await page.route('**/events/stream*', r => r.abort())
+})
+
 test('auth screen baseline', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByLabel('Email')).toBeVisible()

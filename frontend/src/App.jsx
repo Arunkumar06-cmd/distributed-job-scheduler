@@ -4,6 +4,9 @@ import { slug } from './lib/format'
 import { useAuth } from './hooks/useAuth'
 import ErrorBoundary from './components/ErrorBoundary'
 import { Metric, QueueCharts } from './components/Metrics'
+import { ThroughputChart, StatusDonut, LifecycleStrip } from './components/Charts'
+import { ActivityFeed } from './components/ActivityFeed'
+import { relTime } from './lib/format'
 import { JobsPanel, PAGE_SIZE } from './components/JobsPanel'
 import { JobDetails } from './components/JobDetails'
 import { DlqPanel } from './components/DlqPanel'
@@ -18,7 +21,7 @@ function Dashboard({auth}){
   const[stats,setStats]=useState({}),[workers,setWorkers]=useState([]),[healthy,setHealthy]=useState(true)
   const[org,setOrg]=useState(''),[project,setProject]=useState(''),[queue,setQueue]=useState('')
   const[modal,setModal]=useState(null),[note,setNote]=useState(null)
-  const[live,setLive]=useState(false)
+  const[live,setLive]=useState(false),[recent,setRecent]=useState([])
 
   useEffect(()=>{const expire=()=>auth.logout();window.addEventListener('jobflow:session-expired',expire);return()=>window.removeEventListener('jobflow:session-expired',expire)},[auth])
   const loadOrgs=useCallback(async()=>{const x=await api('/organizations',{},auth.token);setOrgs(x);setOrg(v=>x.some(i=>i.id===v)?v:x[0]?.id||'')},[auth.token])
@@ -49,6 +52,7 @@ function Dashboard({auth}){
         const snap = JSON.parse(ev.data)
         const sig = JSON.stringify(snap.counts || {})
         setLive(true)
+        if(snap.recent) setRecent(snap.recent)
         if(sig !== last){
           last = sig
           clearTimeout(bumpRef.current)
@@ -84,39 +88,54 @@ function Dashboard({auth}){
         <div className="queue-list">{queues.map(x=>
           <button key={x.id} className={'queue '+(x.id===queue?'selected':'')} onClick={()=>setQueue(x.id)}>
             <strong>{x.name}</strong>
-            <span><em className={x.is_paused?'paused':''}>{x.is_paused?'Paused':'Active'}</em>{(stats[x.id]?.queued||0)+(stats[x.id]?.running||0)} pending</span>
+            <span><em className={x.is_paused?'paused':''}>{x.is_paused?'Paused':'Active'}</em><i className={'q-dot '+((stats[x.id]?.failed||0)+(stats[x.id]?.dlq||0)>0?'warn':'ok')} title={((stats[x.id]?.failed||0)+(stats[x.id]?.dlq||0))>0?'Needs attention':'Healthy'}/>{(stats[x.id]?.queued||0)+(stats[x.id]?.running||0)} pending</span>
           </button>)}
           {!queues.length&&<div className="empty-side"><b>Start a workspace</b><p>Create an organization, project and queue to begin.</p><button onClick={()=>setModal(project?'queue':org?'project':'organization')}>Create now →</button></div>}
         </div>
         <footer><i/>{workers.filter(x=>x.status==='ONLINE').length} active workers</footer>
       </aside>
-      <main>{q?<QueueView q={q} stats={stats[queue]||{}} auth={auth} refresh={refresh} note={setNote}/>:<Welcome orgs={orgs} projects={projects} open={setModal}/>}</main>
+      <main>{q?<QueueView q={q} stats={stats[queue]||{}} auth={auth} refresh={refresh} note={setNote} recent={recent}/>:<Welcome orgs={orgs} projects={projects} open={setModal}/>}</main>
     </div>
     {modal&&<EntityForm type={modal} auth={auth} org={org} project={project} close={()=>setModal(null)} done={async l=>{setModal(null);await refresh();setNote({t:l+' created successfully.'})}}/>}
   </div>
 }
 
-function QueueView({q,stats,auth,refresh,note}){
+function QueueView({q,stats,auth,refresh,note,recent}){
   const[jobs,setJobs]=useState([]),[filter,setFilter]=useState(''),[search,setSearch]=useState(''),[job,setJob]=useState(null)
   const[logs,setLogs]=useState([]),[create,setCreate]=useState(false),[loading,setLoading]=useState(true)
   const[updated,setUpdated]=useState(null),[page,setPage]=useState(1),[total,setTotal]=useState(0),[totalPages,setTotalPages]=useState(1)
   const[tab,setTab]=useState('jobs')
+  const[tp,setTp]=useState(null)
+  const jobSeq=useRef(0), tpSeq=useRef(0)
 
   useEffect(()=>{setPage(1)},[filter,q.id])
+  // Sequence guard: stale responses from a previous queue/page are discarded
+  // instead of overwriting fresh data.
   const load=useCallback(async()=>{
+    const my=++jobSeq.current
     setLoading(true)
     const p=new URLSearchParams({queue_id:q.id,page_size:String(PAGE_SIZE),page:String(page)})
     if(filter)p.set('status',filter)
-    const x=await api(`/jobs?${p}`,{},auth.token).catch(e=>{note({e:1,t:e.message});return{data:[],total:0,total_pages:1}})
-    setJobs(x.data||[]);setTotal(x.total||0);setTotalPages(x.total_pages||1);setUpdated(new Date());setLoading(false)
-  },[auth.token,filter,page,q.id])
+    const x=await api(`/jobs?${p}`,{},auth.token).catch(e=>{if(my===jobSeq.current)note({e:1,t:e.message});return null})
+    if(my!==jobSeq.current)return
+    setJobs(x?.data||[]);setTotal(x?.total||0);setTotalPages(x?.total_pages||1);setUpdated(new Date());setLoading(false)
+  },[auth.token,filter,page,q.id,note])
   useEffect(()=>{load();const i=setInterval(load,10000);return()=>clearInterval(i)},[load])
+
+  const loadThroughput=useCallback(async()=>{
+    const my=++tpSeq.current
+    try{
+      const x=await api(`/queues/${q.id}/throughput?minutes=30`,{},auth.token)
+      if(my===tpSeq.current)setTp(x)
+    }catch{/* chart simply stays on last good data */}
+  },[auth.token,q.id])
+  useEffect(()=>{loadThroughput();const i=setInterval(loadThroughput,10000);return()=>clearInterval(i)},[loadThroughput])
   // Event-stream change trigger: refresh immediately between intervals.
   useEffect(()=>{
-    const h=()=>load()
+    const h=()=>{load();loadThroughput()}
     window.addEventListener('jobflow:bump',h)
     return()=>window.removeEventListener('jobflow:bump',h)
-  },[load])
+  },[load,loadThroughput])
 
   const inspect=async x=>{setJob(x);setTab('jobs');setLogs(await api(`/jobs/${x.id}/logs`,{},auth.token).catch(()=>[]))}
   const retry=async x=>{try{await api(`/jobs/${x.id}/retry`,{method:'POST'},auth.token);note({t:'Job queued for another attempt.'});load()}catch(e){note({e:1,t:e.message})}}
@@ -141,7 +160,21 @@ function QueueView({q,stats,auth,refresh,note}){
       <Metric x="Completed" y={stats.completed||0} c="green"/>
       <Metric x="Needs attention" y={(stats.failed||0)+(stats.dlq||0)} d={`${stats.dlq||0} in DLQ`} c="red"/>
     </div>
-    <QueueCharts stats={stats} maxConcurrency={q.max_concurrency}/>
+    <LifecycleStrip s={stats}/>
+    <div className="metrics">
+      <Metric x="Success rate · 24h" y={`${tp?.success_rate_24h ?? '—'}%`} c="green"/>
+      <Metric x="Avg duration · 24h" y={tp ? `${Math.round(tp.avg_duration_ms_24h)} ms` : '—'} c="blue"/>
+      <Metric x="Scheduled" y={stats.scheduled||0} d="waiting for their moment" c="purple"/>
+      <Metric x="In retry wait" y={stats.retry_wait||0} d="backing off before next attempt" c="purple"/>
+    </div>
+    <div className="charts-row">
+      <ThroughputChart buckets={tp?.buckets||[]}/>
+      <StatusDonut counts={{
+        QUEUED:stats.queued,RUNNING:stats.running,RETRY_WAIT:stats.retry_wait,
+        FAILED:stats.failed,SCHEDULED:stats.scheduled,CLAIMED:stats.claimed,WAITING:stats.waiting,
+      }} total={(stats.queued||0)+(stats.running||0)+(stats.completed||0)+(stats.failed||0)+(stats.retry_wait||0)+(stats.scheduled||0)}/>
+      <QueueCharts stats={stats} maxConcurrency={q.max_concurrency}/>
+    </div>
     <nav className="tabs" role="tablist" aria-label="Queue views">
       <button role="tab" aria-selected={tab==='jobs'} className={tab==='jobs'?'on':''} onClick={()=>setTab('jobs')}>Jobs</button>
       <button role="tab" aria-selected={tab==='dlq'} className={tab==='dlq'?'on':''} onClick={()=>setTab('dlq')}>Dead letters{stats.dlq?` (${stats.dlq})`:''}</button>
@@ -151,6 +184,7 @@ function QueueView({q,stats,auth,refresh,note}){
         <JobsPanel jobs={jobs} loading={loading} total={total} totalPages={totalPages} page={page} setPage={setPage} pageSize={PAGE_SIZE}
                    onInspect={inspect} onRetry={retry} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} updated={updated}/>
         <JobDetails job={job} logs={logs} retry={()=>retry(job)}/>
+        <ActivityFeed events={recent.filter(e=>e.queue_id===q.id)}/>
       </>:<>
         <DlqPanel q={q} auth={auth} note={note} onChanged={load}/>
         <WorkersPanel workers={[]} />

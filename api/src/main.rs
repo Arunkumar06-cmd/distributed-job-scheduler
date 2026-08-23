@@ -149,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/queues/:id/pause", post(routes::queues::pause))
         .route("/queues/:id/resume", post(routes::queues::resume))
         .route("/queues/:id/stats", get(routes::queues::stats))
+        .route("/queues/:id/throughput", get(routes::queues::throughput))
         .route("/queues/batch-stats", get(routes::queues::batch_stats))
         .route("/jobs", post(routes::jobs::create).get(routes::jobs::list))
         .route("/jobs/batch", post(routes::jobs::create_batch))

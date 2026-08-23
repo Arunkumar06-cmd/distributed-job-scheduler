@@ -287,6 +287,34 @@ pub struct BatchStatsQuery {
     pub ids: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ThroughputQuery {
+    pub minutes: Option<i32>,
+}
+
+/// Time-series + quality metrics powering the dashboard charts.
+pub async fn throughput(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(queue_id): Path<Uuid>,
+    Query(q): Query<ThroughputQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    // Authz gate: resolves to None for hidden queues and non-members alike.
+    queries::authorize_queue(&state.pool, auth.user_id, queue_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
+    let minutes = q.minutes.unwrap_or(30).clamp(5, 240);
+    let (buckets, success_rate, avg_duration_ms) =
+        queries::queue_throughput(&state.pool, queue_id, minutes).await?;
+    Ok(Json(serde_json::json!({
+        "queue_id": queue_id,
+        "minutes": minutes,
+        "buckets": buckets,
+        "success_rate_24h": (success_rate * 100.0).round() / 100.0,
+        "avg_duration_ms_24h": (avg_duration_ms * 10.0).round() / 10.0,
+    })))
+}
+
 pub async fn batch_stats(
     auth: AuthUser,
     State(state): State<AppState>,

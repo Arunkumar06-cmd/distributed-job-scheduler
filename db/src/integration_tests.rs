@@ -19,24 +19,6 @@ mod integration_tests {
 
         let admin = sqlx::PgPool::connect(&admin_url).await.unwrap();
 
-        // Sweep databases orphaned by previous runs. Only ones with zero live
-        // sessions are touched, so concurrent tests in this process are safe.
-        let stale: Vec<(String,)> = sqlx::query_as(
-            r#"SELECT d.datname FROM pg_database d
-               WHERE d.datname LIKE 'js_test\_%'
-                 AND NOT EXISTS (
-                     SELECT 1 FROM pg_stat_activity a
-                     WHERE a.datname = d.datname AND a.pid <> pg_backend_pid()
-                 )"#,
-        )
-        .fetch_all(&admin)
-        .await
-        .unwrap();
-        for (name,) in stale {
-            let _ = sqlx::query(&format!(r#"DROP DATABASE "{name}" WITH (FORCE)"#))
-                .execute(&admin)
-                .await;
-        }
 
         sqlx::query(&format!(r#"CREATE DATABASE "{dbname}""#))
             .execute(&admin)

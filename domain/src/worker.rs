@@ -81,6 +81,9 @@ mod tests {
 
     #[test]
     fn serde_uppercase() {
-        assert_eq!(serde_json::to_string(&WorkerStatus::Stale).unwrap(), "\"STALE\"");
+        assert_eq!(
+            serde_json::to_string(&WorkerStatus::Stale).unwrap(),
+            "\"STALE\""
+        );
     }
 }

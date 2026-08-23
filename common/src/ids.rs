@@ -15,7 +15,10 @@ where
 
 /// The request id installed by `with_request_id` on this task, if any.
 pub fn current_request_id() -> Option<String> {
-    REQUEST_ID.try_with(|id| id.clone()).ok().filter(|s| !s.is_empty())
+    REQUEST_ID
+        .try_with(|id| id.clone())
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 pub fn new_id() -> Uuid {

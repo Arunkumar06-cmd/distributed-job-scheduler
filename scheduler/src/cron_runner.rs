@@ -201,8 +201,7 @@ impl SchedulerRunner {
         if pruned_logs > 0 {
             debug!(pruned_logs, "pruned old job logs");
         }
-        let pruned_hb =
-            queries::prune_worker_heartbeats(&self.pool, 24 * 3600).await?;
+        let pruned_hb = queries::prune_worker_heartbeats(&self.pool, 24 * 3600).await?;
         if pruned_hb > 0 {
             debug!(pruned_hb, "pruned old worker heartbeats");
         }
@@ -225,7 +224,10 @@ impl SchedulerRunner {
         let fire_time = sj.next_fire_at.unwrap_or_else(Utc::now);
 
         // Deactivate schedules whose queue vanished.
-        if queries::queue_context(&self.pool, sj.queue_id).await?.is_none() {
+        if queries::queue_context(&self.pool, sj.queue_id)
+            .await?
+            .is_none()
+        {
             warn!(scheduled_job_id = %sj.id, "queue not found; deactivating schedule");
             queries::deactivate_scheduled_job(&self.pool, sj.id).await?;
             return Ok(());

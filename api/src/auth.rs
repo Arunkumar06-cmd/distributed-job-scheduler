@@ -126,15 +126,29 @@ mod tests {
         let cfg = test_config();
         let uid = Uuid::new_v4();
         let access = create_token(uid, "u@x.com", TokenKind::Access, &cfg).unwrap();
-        assert_eq!(verify_kind(&access, TokenKind::Access, &cfg).unwrap().claims.sub, uid);
+        assert_eq!(
+            verify_kind(&access, TokenKind::Access, &cfg)
+                .unwrap()
+                .claims
+                .sub,
+            uid
+        );
 
         let refresh = create_token(uid, "u@x.com", TokenKind::Refresh, &cfg).unwrap();
-        assert!(verify_kind(&refresh, TokenKind::Access, &cfg).is_err(),
-                "refresh token must not authenticate API requests");
+        assert!(
+            verify_kind(&refresh, TokenKind::Access, &cfg).is_err(),
+            "refresh token must not authenticate API requests"
+        );
         assert!(verify_kind(&access, TokenKind::Refresh, &cfg).is_err());
 
         // Refresh roundtrip for the rotation endpoint.
-        assert_eq!(verify_kind(&refresh, TokenKind::Refresh, &cfg).unwrap().claims.sub, uid);
+        assert_eq!(
+            verify_kind(&refresh, TokenKind::Refresh, &cfg)
+                .unwrap()
+                .claims
+                .sub,
+            uid
+        );
     }
 
     #[test]

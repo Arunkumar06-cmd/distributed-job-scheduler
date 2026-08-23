@@ -182,7 +182,11 @@ mod tests {
 
     #[test]
     fn terminal_states_are_absorbing() {
-        for from in [JobStatus::Completed, JobStatus::Failed, JobStatus::Cancelled] {
+        for from in [
+            JobStatus::Completed,
+            JobStatus::Failed,
+            JobStatus::Cancelled,
+        ] {
             assert!(from.is_terminal());
             for to in [
                 JobStatus::Queued,
@@ -221,8 +225,14 @@ mod tests {
 
     #[test]
     fn serde_matches_sql_labels() {
-        assert_eq!(serde_json::to_string(&JobStatus::RetryWait).unwrap(), "\"RETRY_WAIT\"");
-        assert_eq!(serde_json::to_string(&JobKind::Recurring).unwrap(), "\"recurring\"");
+        assert_eq!(
+            serde_json::to_string(&JobStatus::RetryWait).unwrap(),
+            "\"RETRY_WAIT\""
+        );
+        assert_eq!(
+            serde_json::to_string(&JobKind::Recurring).unwrap(),
+            "\"recurring\""
+        );
         assert_eq!(
             serde_json::to_string(&ExecutionStatus::Abandoned).unwrap(),
             "\"ABANDONED\""

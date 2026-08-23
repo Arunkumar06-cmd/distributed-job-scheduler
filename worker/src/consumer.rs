@@ -299,11 +299,10 @@ impl WorkerConsumer {
         });
 
         // Execute the handler guarded against panics and hangs.
-        let result =
-            crate::handler::run_protected(self.config.handler_timeout_secs, async {
-                self.execute_handler(&job, claimed.execution_id).await
-            })
-            .await;
+        let result = crate::handler::run_protected(self.config.handler_timeout_secs, async {
+            self.execute_handler(&job, claimed.execution_id).await
+        })
+        .await;
 
         // Stop lease renewal + InProgress
         lease_cancel.cancel();
@@ -380,11 +379,7 @@ impl WorkerConsumer {
         }
     }
 
-    async fn transition_to_running(
-        &self,
-        job_id: Uuid,
-        epoch: i64,
-    ) -> anyhow::Result<Option<Job>> {
+    async fn transition_to_running(&self, job_id: Uuid, epoch: i64) -> anyhow::Result<Option<Job>> {
         let job = sqlx::query_as::<_, Job>(
             r#"UPDATE jobs SET
                  status = 'RUNNING'::job_status,

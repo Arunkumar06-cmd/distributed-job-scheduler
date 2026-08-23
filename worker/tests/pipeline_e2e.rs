@@ -27,12 +27,16 @@ async fn migrated_pool() -> sqlx::PgPool {
 /// Drive the real relay code path: claim → publish → clear.
 async fn run_relay_once(pool: &sqlx::PgPool, nats: async_nats::Client) {
     let publisher = outbox::publisher::Publisher::new(nats);
-    let events = queries::claim_outbox_batch(pool, "e2e-relay", 100, 30).await.unwrap();
+    let events = queries::claim_outbox_batch(pool, "e2e-relay", 100, 30)
+        .await
+        .unwrap();
     for e in &events {
         publisher.publish(e).await.unwrap();
     }
     let ids: Vec<Uuid> = events.iter().map(|e| e.id).collect();
-    queries::clear_outbox_events(pool, "e2e-relay", &ids).await.unwrap();
+    queries::clear_outbox_events(pool, "e2e-relay", &ids)
+        .await
+        .unwrap();
 }
 
 async fn wait_status(
@@ -47,7 +51,10 @@ async fn wait_status(
         if want.contains(&job.status) {
             return job;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {want:?}, last={job:?}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {want:?}, last={job:?}"
+        );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -61,15 +68,29 @@ async fn pipeline_echo_job_completes() {
     let user = queries::create_user(&pool, &format!("pipe{}@t.io", Uuid::new_v4()), "h", "P")
         .await
         .unwrap();
-    let org = queries::create_organization(&pool, "Pipe Org", &format!("pipe-{}", Uuid::new_v4()), user.id)
-        .await
-        .unwrap();
-    let proj = queries::create_project(&pool, org.id, "P", &format!("pipe-{}", Uuid::new_v4()), "", user.id)
-        .await
-        .unwrap();
-    let queue = queries::create_queue(&pool, proj.id, "pipe-q", "", 4, 5, 60, 3, None, None, None, 1)
-        .await
-        .unwrap();
+    let org = queries::create_organization(
+        &pool,
+        "Pipe Org",
+        &format!("pipe-{}", Uuid::new_v4()),
+        user.id,
+    )
+    .await
+    .unwrap();
+    let proj = queries::create_project(
+        &pool,
+        org.id,
+        "P",
+        &format!("pipe-{}", Uuid::new_v4()),
+        "",
+        user.id,
+    )
+    .await
+    .unwrap();
+    let queue = queries::create_queue(
+        &pool, proj.id, "pipe-q", "", 4, 5, 60, 3, None, None, None, 1,
+    )
+    .await
+    .unwrap();
 
     let cfg = Arc::new(Config::from_env());
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -83,7 +104,12 @@ async fn pipeline_echo_job_completes() {
     let js = async_nats::jetstream::new(nats.clone());
     let subject = format!("org.{}.proj.{}.queue.{}.*", org.id, proj.id, queue.id);
     let stream_name = common::ids::nats_stream_name(&org.id, &proj.id, &queue.id);
-    ensure_stream(&js, &stream_name, &format!("org.{}.proj.{}.queue.{}.>", org.id, proj.id, queue.id)).await;
+    ensure_stream(
+        &js,
+        &stream_name,
+        &format!("org.{}.proj.{}.queue.{}.>", org.id, proj.id, queue.id),
+    )
+    .await;
 
     let consumer = Arc::new(WorkerConsumer::new(
         pool.clone(),
@@ -95,7 +121,10 @@ async fn pipeline_echo_job_completes() {
     ));
     let consumer_task = tokio::spawn({
         let c = Arc::clone(&consumer);
-        { let subject = subject.clone(); async move { c.consume_subject(subject, stream_name).await } }
+        {
+            let subject = subject.clone();
+            async move { c.consume_subject(subject, stream_name).await }
+        }
     });
 
     // 1. Happy path: echo job must reach COMPLETED with its result stored.
@@ -116,16 +145,28 @@ async fn pipeline_echo_job_completes() {
             max_delay_secs: 3600,
             scheduled_for: None,
             idempotency_key: None,
-            subject: format!("org.{}.proj.{}.queue.{}.standard", org.id, proj.id, queue.id),
+            subject: format!(
+                "org.{}.proj.{}.queue.{}.standard",
+                org.id, proj.id, queue.id
+            ),
         },
     )
     .await
     .unwrap();
     run_relay_once(&pool, nats.clone()).await;
 
-    let done = wait_status(&pool, job.id, &[domain::JobStatus::Completed], Duration::from_secs(30)).await;
+    let done = wait_status(
+        &pool,
+        job.id,
+        &[domain::JobStatus::Completed],
+        Duration::from_secs(30),
+    )
+    .await;
     assert_eq!(done.attempt, 1);
-    assert_eq!(done.result.as_ref().unwrap()["echoed"], serde_json::json!(true));
+    assert_eq!(
+        done.result.as_ref().unwrap()["echoed"],
+        serde_json::json!(true)
+    );
 
     // Execution ledger must hold exactly one completed attempt tied to our worker.
     let execs = queries::list_executions(&pool, job.id).await.unwrap();
@@ -151,14 +192,23 @@ async fn pipeline_echo_job_completes() {
             max_delay_secs: 5,
             scheduled_for: None,
             idempotency_key: None,
-            subject: format!("org.{}.proj.{}.queue.{}.standard", org.id, proj.id, queue.id),
+            subject: format!(
+                "org.{}.proj.{}.queue.{}.standard",
+                org.id, proj.id, queue.id
+            ),
         },
     )
     .await
     .unwrap();
     run_relay_once(&pool, nats.clone()).await;
 
-    let failed = wait_status(&pool, bad.id, &[domain::JobStatus::Failed], Duration::from_secs(30)).await;
+    let failed = wait_status(
+        &pool,
+        bad.id,
+        &[domain::JobStatus::Failed],
+        Duration::from_secs(30),
+    )
+    .await;
     assert_eq!(failed.error_kind.as_deref(), Some("test_failure"));
 
     let dlq: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dead_letter_entries WHERE job_id = $1")
@@ -182,8 +232,12 @@ async fn pipeline_echo_job_completes() {
     // Graceful stop: cancel, consumer drains and exits.
     shutdown.cancel();
     let _ = tokio::time::timeout(Duration::from_secs(10), consumer_task).await;
-    queries::mark_worker_stopped(&pool, worker.id).await.unwrap();
+    queries::mark_worker_stopped(&pool, worker.id)
+        .await
+        .unwrap();
 
     // Silence unused-import warnings for fixtures used indirectly.
-    let _ = AlwaysFailHandler { message: String::new() };
+    let _ = AlwaysFailHandler {
+        message: String::new(),
+    };
 }

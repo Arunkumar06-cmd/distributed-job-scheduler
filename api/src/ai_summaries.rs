@@ -107,7 +107,9 @@ pub fn spawn(pool: PgPool, config: Arc<Config>, shutdown: tokio_util::sync::Canc
                             info_summary_stored(entry.id);
                         }
                     }
-                    Err(error) => warn!(dlq_id = %entry.id, %error, "AI failure summary deferred (will retry next tick)"),
+                    Err(error) => {
+                        warn!(dlq_id = %entry.id, %error, "AI failure summary deferred (will retry next tick)")
+                    }
                 }
             }
         }

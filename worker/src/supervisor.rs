@@ -132,9 +132,14 @@ impl WorkerSupervisor {
             .fetch_one(&self.pool)
             .await
             .unwrap_or(0);
-            if running == 0 || drain_start.elapsed() >= Duration::from_secs(self.config.shutdown_grace_secs) {
+            if running == 0
+                || drain_start.elapsed() >= Duration::from_secs(self.config.shutdown_grace_secs)
+            {
                 if running > 0 {
-                    warn!(running, "drain grace exhausted with jobs still active; leases will expire");
+                    warn!(
+                        running,
+                        "drain grace exhausted with jobs still active; leases will expire"
+                    );
                 }
                 break;
             }
@@ -228,11 +233,7 @@ fn stream_name_for_subject(subject: &str) -> String {
 
 /// Provision the queue's stream if missing. Awaited by callers before consumer
 /// creation; failures are logged, not fatal (consumer creation retries).
-pub async fn ensure_stream(
-    js: &jetstream::Context,
-    stream_name: &str,
-    subject_filter: &str,
-) {
+pub async fn ensure_stream(js: &jetstream::Context, stream_name: &str, subject_filter: &str) {
     match js.get_stream(stream_name).await {
         Ok(_) => {}
         Err(_) => match js

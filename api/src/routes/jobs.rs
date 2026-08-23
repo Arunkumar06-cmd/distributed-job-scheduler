@@ -1,16 +1,18 @@
+use crate::extract::ApiJson;
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
 use chrono::{DateTime, Utc};
-use crate::extract::ApiJson;
 use serde::Deserialize;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
-use crate::routes::validate::{normalize_idempotency_key, reject_control_chars, validate_payload, validate_retry_config};
 use crate::routes::queues;
+use crate::routes::validate::{
+    normalize_idempotency_key, reject_control_chars, validate_payload, validate_retry_config,
+};
 use crate::state::AppState;
 use common::{ids, AppError, AppResult};
 use db::queries;
@@ -33,7 +35,6 @@ pub struct CreateJobReq {
     pub job_type: Option<String>,
     pub kind: Option<String>,
 }
-
 
 fn parse_retry_strategy(s: Option<&str>) -> AppResult<RetryStrategy> {
     match s.unwrap_or("exponential") {
@@ -58,9 +59,6 @@ fn parse_job_kind(s: &str) -> AppResult<JobKind> {
         ))),
     }
 }
-
-
-
 
 pub async fn create(
     auth: AuthUser,
@@ -96,8 +94,17 @@ pub async fn create(
         return Err(AppError::Validation("priority must be 0..100".to_string()));
     }
     validate_payload(&req.payload)?;
-    if req.payload.get("type").and_then(|v| v.as_str()).map(|t| reject_control_chars("type", t)).transpose().is_err() {
-        return Err(AppError::Validation("payload.type contains control characters".into()));
+    if req
+        .payload
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|t| reject_control_chars("type", t))
+        .transpose()
+        .is_err()
+    {
+        return Err(AppError::Validation(
+            "payload.type contains control characters".into(),
+        ));
     }
 
     // Retry config layering: explicit request > queue's retry policy template
@@ -177,9 +184,7 @@ fn parse_status(s: &str) -> AppResult<Option<JobStatus>> {
         "CANCELLED" => Ok(Some(JobStatus::Cancelled)),
         "WAITING" => Ok(Some(JobStatus::Waiting)),
         "UNKNOWN_EXTERNAL_RESULT" | "UNKNOWN" => Ok(Some(JobStatus::UnknownExternalResult)),
-        _ => Err(AppError::Validation(format!(
-            "unknown status filter {s:?}"
-        ))),
+        _ => Err(AppError::Validation(format!("unknown status filter {s:?}"))),
     }
 }
 
@@ -364,12 +369,12 @@ pub async fn create_batch(
             .or(req.priority)
             .unwrap_or(queue.default_priority);
         if !(0..=100).contains(&priority) {
-            return Err(AppError::Validation(
-                "priority must be 0..100".to_string(),
-            ));
+            return Err(AppError::Validation("priority must be 0..100".to_string()));
         }
         let shard_id = ids::shard_for_key(
-            &idempotency_key.clone().unwrap_or_else(|| Uuid::new_v4().to_string()),
+            &idempotency_key
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
             queue.shard_count,
         );
         let subject = ids::nats_subject_for_shard(

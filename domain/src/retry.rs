@@ -134,7 +134,10 @@ mod tests {
 
     #[test]
     fn serde_matches_sql_labels() {
-        assert_eq!(serde_json::to_string(&RetryStrategy::Fixed).unwrap(), "\"fixed\"");
+        assert_eq!(
+            serde_json::to_string(&RetryStrategy::Fixed).unwrap(),
+            "\"fixed\""
+        );
         assert_eq!(
             serde_json::to_string(&RetryStrategy::Exponential).unwrap(),
             "\"exponential\""

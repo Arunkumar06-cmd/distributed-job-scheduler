@@ -197,10 +197,12 @@ mod tests {
     #[tokio::test]
     async fn request_id_is_correlated_from_task_scope() {
         let err = AppError::NotFound("thing".to_string());
-        let resp = crate::ids::with_request_id("req-abc-123".to_string(), async move {
-            err.into_response()
-        })
-        .await;
+        let resp =
+            crate::ids::with_request_id(
+                "req-abc-123".to_string(),
+                async move { err.into_response() },
+            )
+            .await;
         assert_eq!(
             resp.headers().get("x-request-id").is_none(),
             true,

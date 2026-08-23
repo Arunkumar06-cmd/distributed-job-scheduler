@@ -71,10 +71,7 @@ pub async fn with_default_handlers() -> Arc<HandlerRegistry> {
 ///   subject; the panic is converted into a retryable failure.
 /// - A handler that awaits forever would otherwise pin its consumer forever.
 ///   Handlers are contractually idempotent, so timeout => retry is safe.
-pub async fn run_protected<F>(
-    timeout_secs: u64,
-    fut: F,
-) -> HandlerResult
+pub async fn run_protected<F>(timeout_secs: u64, fut: F) -> HandlerResult
 where
     F: std::future::Future<Output = HandlerResult>,
 {
@@ -110,14 +107,11 @@ mod tests {
 
     #[tokio::test]
     async fn panic_becomes_retryable_failure() {
-        let result = run_protected(
-            5,
-            async {
-                panic!("boom inside handler");
-                #[allow(unreachable_code)]
-                HandlerResult::Ok(None)
-            },
-        )
+        let result = run_protected(5, async {
+            panic!("boom inside handler");
+            #[allow(unreachable_code)]
+            HandlerResult::Ok(None)
+        })
         .await;
         match result {
             HandlerResult::Retry { message, kind } => {
@@ -130,13 +124,10 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_becomes_retryable_failure() {
-        let result = run_protected(
-            1,
-            async {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                HandlerResult::Ok(None)
-            },
-        )
+        let result = run_protected(1, async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            HandlerResult::Ok(None)
+        })
         .await;
         match result {
             HandlerResult::Retry { kind, .. } => assert_eq!(kind, "handler_timeout"),
@@ -146,7 +137,8 @@ mod tests {
 
     #[tokio::test]
     async fn healthy_handler_passes_through() {
-        let result = run_protected(5, async { HandlerResult::Ok(Some(serde_json::json!(1))) }).await;
+        let result =
+            run_protected(5, async { HandlerResult::Ok(Some(serde_json::json!(1))) }).await;
         assert!(matches!(result, HandlerResult::Ok(_)));
     }
 }

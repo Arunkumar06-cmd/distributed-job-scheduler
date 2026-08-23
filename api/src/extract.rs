@@ -37,9 +37,7 @@ fn map_rejection(err: axum::extract::rejection::JsonRejection) -> AppError {
             let detail = msg.rsplit(':').next().unwrap_or("invalid body").trim();
             AppError::Validation(format!("invalid body: {detail}"))
         }
-        JsonSyntaxError(_) => {
-            AppError::Validation("request body is not valid JSON".to_string())
-        }
+        JsonSyntaxError(_) => AppError::Validation("request body is not valid JSON".to_string()),
         MissingJsonContentType(_) => {
             AppError::Validation("Content-Type must be application/json".to_string())
         }

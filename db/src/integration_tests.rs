@@ -98,10 +98,12 @@ mod integration_tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::raw_sql(include_str!("../migrations/0011_lifecycle_and_constraints.sql"))
-            .execute(pool)
-            .await
-            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../migrations/0011_lifecycle_and_constraints.sql"
+        ))
+        .execute(pool)
+        .await
+        .unwrap();
         sqlx::raw_sql(include_str!("../migrations/0012_audit_log.sql"))
             .execute(pool)
             .await
@@ -135,11 +137,10 @@ mod integration_tests {
         )
         .await
         .unwrap();
-        let q = crate::queries::create_queue(
-            pool, proj.id, "q1", "", 3, 5, 60, 3, None, None, None, 1,
-        )
-        .await
-        .unwrap();
+        let q =
+            crate::queries::create_queue(pool, proj.id, "q1", "", 3, 5, 60, 3, None, None, None, 1)
+                .await
+                .unwrap();
         (org.id, proj.id, q.id)
     }
 
@@ -405,10 +406,7 @@ mod integration_tests {
         )
         .await
         .unwrap();
-        assert!(matches!(
-            outcome,
-            crate::queries::FailOutcome::DeadLettered
-        ));
+        assert!(matches!(outcome, crate::queries::FailOutcome::DeadLettered));
 
         let dlq: (Uuid,) = sqlx::query_as("SELECT id FROM dead_letter_entries WHERE job_id = $1")
             .bind(job.id)
@@ -427,16 +425,17 @@ mod integration_tests {
 
         // Double replay must be rejected.
         let again = crate::queries::replay_dlq_entry(&pool, dlq.0).await;
-        assert!(again.is_err(), "second replay of the same entry must conflict");
+        assert!(
+            again.is_err(),
+            "second replay of the same entry must conflict"
+        );
 
         // The replayed job's outbox subject carries its inherited tier.
-        let subj: (String,) = sqlx::query_as(
-            "SELECT subject FROM outbox_events WHERE job_id = $1",
-        )
-        .bind(replayed.id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let subj: (String,) = sqlx::query_as("SELECT subject FROM outbox_events WHERE job_id = $1")
+            .bind(replayed.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert!(subj.0.ends_with(".high"), "subject: {}", subj.0);
     }
 
@@ -458,12 +457,11 @@ mod integration_tests {
 
         let n = crate::queries::backfill_queued_outbox(&pool).await.unwrap();
         assert_eq!(n, 1);
-        let subj: (String,) =
-            sqlx::query_as("SELECT subject FROM outbox_events WHERE job_id = $1")
-                .bind(j)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let subj: (String,) = sqlx::query_as("SELECT subject FROM outbox_events WHERE job_id = $1")
+            .bind(j)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         let expected_suffix = format!("proj.{proj}.queue.{qid}.standard");
         assert!(
             subj.0.contains(&expected_suffix),
@@ -477,15 +475,10 @@ mod integration_tests {
     #[tokio::test]
     async fn test_worker_heartbeat_pruning() {
         let pool = test_pool().await;
-        let w = crate::queries::upsert_worker(
-            &pool,
-            &format!("w-{}", Uuid::new_v4()),
-            "0.1",
-            "h",
-            2,
-        )
-        .await
-        .unwrap();
+        let w =
+            crate::queries::upsert_worker(&pool, &format!("w-{}", Uuid::new_v4()), "0.1", "h", 2)
+                .await
+                .unwrap();
         crate::queries::heartbeat(&pool, w.id, 0, 1, 0)
             .await
             .unwrap();
@@ -516,11 +509,7 @@ mod integration_tests {
         let (_org, _proj, qid) = seed_org_proj_queue(&pool).await;
 
         // Two UNKNOWN jobs past grace; reconciler must resolve them per policy.
-        async fn mk(
-            pool: &sqlx::PgPool,
-            qid: uuid::Uuid,
-            key: &str,
-        ) -> sqlx::Result<uuid::Uuid> {
+        async fn mk(pool: &sqlx::PgPool, qid: uuid::Uuid, key: &str) -> sqlx::Result<uuid::Uuid> {
             sqlx::query_scalar::<_, uuid::Uuid>(
                 r#"INSERT INTO jobs (queue_id, status, payload, priority, attempt, updated_at)
                    VALUES ($1, 'UNKNOWN_EXTERNAL_RESULT', '{}'::jsonb, 5, 1, NOW() - INTERVAL '1 hour')
@@ -543,15 +532,15 @@ mod integration_tests {
         .unwrap();
 
         // Default dlq policy: FAILED + DLQ entry.
-        let (resolved, _) =
-            crate::queries::reconcile_unknown_jobs(&pool, "dlq", 900).await.unwrap();
+        let (resolved, _) = crate::queries::reconcile_unknown_jobs(&pool, "dlq", 900)
+            .await
+            .unwrap();
         assert_eq!(resolved, 1);
-        let status: String =
-            sqlx::query_scalar("SELECT status::text FROM jobs WHERE id = $1")
-                .bind(j_dlq)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let status: String = sqlx::query_scalar("SELECT status::text FROM jobs WHERE id = $1")
+            .bind(j_dlq)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(status, "FAILED");
         let in_dlq: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM dead_letter_entries WHERE job_id = $1 AND reason = 'permanent_failure'",
@@ -563,18 +552,18 @@ mod integration_tests {
         assert_eq!(in_dlq, 1);
 
         // Fresh job inside grace window untouched.
-        let still: String =
-            sqlx::query_scalar("SELECT status::text FROM jobs WHERE id = $1")
-                .bind(j_fresh)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let still: String = sqlx::query_scalar("SELECT status::text FROM jobs WHERE id = $1")
+            .bind(j_fresh)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(still, "UNKNOWN_EXTERNAL_RESULT");
 
         // Retry policy redrives with a fresh outbox event.
         let j_retry = mk(&pool, qid, "retry-case").await.unwrap();
-        let (resolved, _) =
-            crate::queries::reconcile_unknown_jobs(&pool, "retry", 900).await.unwrap();
+        let (resolved, _) = crate::queries::reconcile_unknown_jobs(&pool, "retry", 900)
+            .await
+            .unwrap();
         assert_eq!(resolved, 1);
         let (status, outbox): (String, i64) = sqlx::query_as(
             "SELECT j.status::text,
@@ -586,7 +575,10 @@ mod integration_tests {
         .await
         .unwrap();
         assert_eq!(status, "QUEUED");
-        assert!(outbox >= 1, "retry policy must publish a fresh outbox event");
+        assert!(
+            outbox >= 1,
+            "retry policy must publish a fresh outbox event"
+        );
 
         // Invalid policy rejected cleanly.
         let err = crate::queries::reconcile_unknown_jobs(&pool, "yolo", 900).await;
@@ -615,24 +607,69 @@ mod integration_tests {
             .await
             .unwrap();
 
-        let (attempts, strategy, base, max) =
-            crate::queries::resolve_retry_defaults(&pool, qid).await.unwrap();
-        assert_eq!((attempts, strategy, base, max),
-                   (5, domain::RetryStrategy::Fixed, 2, 60));
+        let (attempts, strategy, base, max) = crate::queries::resolve_retry_defaults(&pool, qid)
+            .await
+            .unwrap();
+        assert_eq!(
+            (attempts, strategy, base, max),
+            (5, domain::RetryStrategy::Fixed, 2, 60)
+        );
 
         // Queue with no policy falls back to its own columns.
         let (_o2, _p2, qid_bare) = {
-            let user = crate::queries::create_user(&pool, &format!("x{}@t.co", uuid::Uuid::new_v4()), "h", "X").await.unwrap();
-            let o = crate::queries::create_organization(&pool, "O", &format!("o{}", &uuid::Uuid::new_v4().to_string()[..8]), user.id).await.unwrap();
-            let p = crate::queries::create_project(&pool, o.id, "P", &format!("pp{}", &uuid::Uuid::new_v4().to_string()[..8]), "", user.id).await.unwrap();
-            let q = crate::queries::create_queue(&pool, p.id, "qb", "", 2, 7, 30, 2, None, None, None, 1).await.unwrap();
+            let user = crate::queries::create_user(
+                &pool,
+                &format!("x{}@t.co", uuid::Uuid::new_v4()),
+                "h",
+                "X",
+            )
+            .await
+            .unwrap();
+            let o = crate::queries::create_organization(
+                &pool,
+                "O",
+                &format!("o{}", &uuid::Uuid::new_v4().to_string()[..8]),
+                user.id,
+            )
+            .await
+            .unwrap();
+            let p = crate::queries::create_project(
+                &pool,
+                o.id,
+                "P",
+                &format!("pp{}", &uuid::Uuid::new_v4().to_string()[..8]),
+                "",
+                user.id,
+            )
+            .await
+            .unwrap();
+            let q = crate::queries::create_queue(
+                &pool, p.id, "qb", "", 2, 7, 30, 2, None, None, None, 1,
+            )
+            .await
+            .unwrap();
             (o.id, p.id, q.id)
         };
-        let bare = crate::queries::resolve_retry_defaults(&pool, qid_bare).await.unwrap();
+        let bare = crate::queries::resolve_retry_defaults(&pool, qid_bare)
+            .await
+            .unwrap();
         assert_eq!(bare, (3, domain::RetryStrategy::Exponential, 5, 3600));
 
         // job_type CHECK: valid write ok, junk rejected.
-        let sj_ok = crate::queries::create_scheduled_job(&pool, qid, "ok", "recurring", serde_json::json!({}), 5, None, "UTC", Some(chrono::Utc::now() + chrono::Duration::hours(1)), None).await.unwrap();
+        let sj_ok = crate::queries::create_scheduled_job(
+            &pool,
+            qid,
+            "ok",
+            "recurring",
+            serde_json::json!({}),
+            5,
+            None,
+            "UTC",
+            Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            None,
+        )
+        .await
+        .unwrap();
         let _ = sj_ok;
         let bad = sqlx::query(
             "INSERT INTO scheduled_jobs (queue_id, name, job_type, payload) VALUES ($1,'bad','echo','{}'::jsonb)",
@@ -640,7 +677,10 @@ mod integration_tests {
         .bind(qid)
         .execute(&pool)
         .await;
-        assert!(bad.is_err(), "free-text job_type must now violate the CHECK");
+        assert!(
+            bad.is_err(),
+            "free-text job_type must now violate the CHECK"
+        );
 
         // Archival: complete two jobs backdated past cutoff; one keeps an
         // un-replayed DLQ entry and must be protected.
@@ -663,51 +703,111 @@ mod integration_tests {
                 .bind(jid).bind(org).bind(proj).execute(&pool).await.unwrap();
             }
         }
-        let moved = crate::queries::archive_terminal_jobs(&pool, 5, 100).await.unwrap();
+        let moved = crate::queries::archive_terminal_jobs(&pool, 5, 100)
+            .await
+            .unwrap();
         assert_eq!(moved, 1, "only the DLQ-free completed job may archive");
-        let hot: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE queue_id = $1 AND status='COMPLETED'")
-            .bind(qid).fetch_one(&pool).await.unwrap();
+        let hot: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM jobs WHERE queue_id = $1 AND status='COMPLETED'",
+        )
+        .bind(qid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(hot, 1);
-        let archived: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs_archive WHERE queue_id = $1")
-            .bind(qid).fetch_one(&pool).await.unwrap();
+        let archived: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM jobs_archive WHERE queue_id = $1")
+                .bind(qid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(archived, 1);
     }
 
     #[tokio::test]
     async fn test_queue_authz_roles() {
         let pool = test_pool().await;
-        let owner = crate::queries::create_user(&pool, &format!("o{}@t.co", Uuid::new_v4()), "h", "O").await.unwrap();
-        let member = crate::queries::create_user(&pool, &format!("m{}@t.co", Uuid::new_v4()), "h", "M").await.unwrap();
-        let viewer = crate::queries::create_user(&pool, &format!("v{}@t.co", Uuid::new_v4()), "h", "V").await.unwrap();
-        let outsider = crate::queries::create_user(&pool, &format!("x{}@t.co", Uuid::new_v4()), "h", "X").await.unwrap();
-        let org = crate::queries::create_organization(&pool, "Org", &format!("az{}", &Uuid::new_v4().to_string()[..8]), owner.id).await.unwrap();
-        let proj = crate::queries::create_project(&pool, org.id, "P", &format!("az{}", &Uuid::new_v4().to_string()[..8]), "", owner.id).await.unwrap();
-        let q = crate::queries::create_queue(&pool, proj.id, "q", "", 2, 5, 60, 3, None, None, None, 1).await.unwrap();
+        let owner =
+            crate::queries::create_user(&pool, &format!("o{}@t.co", Uuid::new_v4()), "h", "O")
+                .await
+                .unwrap();
+        let member =
+            crate::queries::create_user(&pool, &format!("m{}@t.co", Uuid::new_v4()), "h", "M")
+                .await
+                .unwrap();
+        let viewer =
+            crate::queries::create_user(&pool, &format!("v{}@t.co", Uuid::new_v4()), "h", "V")
+                .await
+                .unwrap();
+        let outsider =
+            crate::queries::create_user(&pool, &format!("x{}@t.co", Uuid::new_v4()), "h", "X")
+                .await
+                .unwrap();
+        let org = crate::queries::create_organization(
+            &pool,
+            "Org",
+            &format!("az{}", &Uuid::new_v4().to_string()[..8]),
+            owner.id,
+        )
+        .await
+        .unwrap();
+        let proj = crate::queries::create_project(
+            &pool,
+            org.id,
+            "P",
+            &format!("az{}", &Uuid::new_v4().to_string()[..8]),
+            "",
+            owner.id,
+        )
+        .await
+        .unwrap();
+        let q =
+            crate::queries::create_queue(&pool, proj.id, "q", "", 2, 5, 60, 3, None, None, None, 1)
+                .await
+                .unwrap();
 
-        crate::queries::upsert_org_membership(&pool, org.id, member.id, "member").await.unwrap();
-        crate::queries::upsert_org_membership(&pool, org.id, viewer.id, "viewer").await.unwrap();
+        crate::queries::upsert_org_membership(&pool, org.id, member.id, "member")
+            .await
+            .unwrap();
+        crate::queries::upsert_org_membership(&pool, org.id, viewer.id, "viewer")
+            .await
+            .unwrap();
 
-        let owner_ctx = crate::queries::authorize_queue(&pool, owner.id, q.id).await.unwrap().unwrap();
+        let owner_ctx = crate::queries::authorize_queue(&pool, owner.id, q.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(owner_ctx.role, "owner");
         assert!(owner_ctx.can_admin() && owner_ctx.can_write());
         owner_ctx.require_admin().unwrap();
 
-        let member_ctx = crate::queries::authorize_queue(&pool, member.id, q.id).await.unwrap().unwrap();
+        let member_ctx = crate::queries::authorize_queue(&pool, member.id, q.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(member_ctx.role, "member");
         assert!(member_ctx.can_write() && !member_ctx.can_admin());
         assert!(member_ctx.require_writer().is_ok());
         assert!(member_ctx.require_admin().is_err());
 
-        let viewer_ctx = crate::queries::authorize_queue(&pool, viewer.id, q.id).await.unwrap().unwrap();
-        assert_eq!(viewer_ctx.role, "viewer");
-        assert!(viewer_ctx.require_writer().is_err(), "viewer must not write");
-        assert!(viewer_ctx.require_admin().is_err());
-
-        assert!(crate::queries::authorize_queue(&pool, outsider.id, q.id)
+        let viewer_ctx = crate::queries::authorize_queue(&pool, viewer.id, q.id)
             .await
             .unwrap()
-            .is_none(),
-            "non-members must not resolve any authz context");
+            .unwrap();
+        assert_eq!(viewer_ctx.role, "viewer");
+        assert!(
+            viewer_ctx.require_writer().is_err(),
+            "viewer must not write"
+        );
+        assert!(viewer_ctx.require_admin().is_err());
+
+        assert!(
+            crate::queries::authorize_queue(&pool, outsider.id, q.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "non-members must not resolve any authz context"
+        );
 
         // The audit helper persists privileged-mutation records; routes call
         // this after membership changes.
@@ -740,9 +840,15 @@ mod integration_tests {
         let mut workers = Vec::new();
         for i in 0..8 {
             workers.push(
-                crate::queries::upsert_worker(&pool, &format!("w-{}-{i}", Uuid::new_v4()), "0.1", "h", 1)
-                    .await
-                    .unwrap(),
+                crate::queries::upsert_worker(
+                    &pool,
+                    &format!("w-{}-{i}", Uuid::new_v4()),
+                    "0.1",
+                    "h",
+                    1,
+                )
+                .await
+                .unwrap(),
             );
         }
         let p = crate::queries::CreateJobParams {
@@ -762,7 +868,9 @@ mod integration_tests {
             idempotency_key: None,
             subject: subject.to_string(),
         };
-        let job = crate::queries::create_job_with_outbox(&pool, p).await.unwrap();
+        let job = crate::queries::create_job_with_outbox(&pool, p)
+            .await
+            .unwrap();
 
         let mut handles = Vec::new();
         for w in &workers {
@@ -823,9 +931,15 @@ mod integration_tests {
         let mut workers = Vec::new();
         for i in 0..12 {
             workers.push(
-                crate::queries::upsert_worker(&pool, &format!("c-{i}-{}", Uuid::new_v4()), "0.1", "h", 1)
-                    .await
-                    .unwrap(),
+                crate::queries::upsert_worker(
+                    &pool,
+                    &format!("c-{i}-{}", Uuid::new_v4()),
+                    "0.1",
+                    "h",
+                    1,
+                )
+                .await
+                .unwrap(),
             );
         }
 
@@ -842,12 +956,7 @@ mod integration_tests {
         let claimed = outcomes.iter().filter(|r| matches!(r, Ok(Ok(_)))).count();
         let capacity_blocked = outcomes
             .iter()
-            .filter(|r| {
-                matches!(
-                    r,
-                    Ok(Err(common::AppError::QueueAtCapacity))
-                )
-            })
+            .filter(|r| matches!(r, Ok(Err(common::AppError::QueueAtCapacity))))
             .count();
         assert_eq!(claimed, 3, "capacity tokens bound concurrent claims to 3");
         assert_eq!(claimed + capacity_blocked, 12, "every attempt resolves");

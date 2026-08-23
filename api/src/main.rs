@@ -207,9 +207,7 @@ async fn main() -> anyhow::Result<()> {
         )
         // Innermost so every downstream layer/handler sees the id; error bodies
         // read it back through the task-local in common::ids.
-        .layer(middleware::from_fn(
-            api::middleware::request_id_middleware,
-        ))
+        .layer(middleware::from_fn(api::middleware::request_id_middleware))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(tower_http::trace::TraceLayer::new_for_http())
@@ -234,4 +232,3 @@ async fn shutdown_signal(token: tokio_util::sync::CancellationToken, grace_secs:
     token.cancel();
     tokio::time::sleep(std::time::Duration::from_secs(grace_secs)).await;
 }
-

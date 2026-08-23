@@ -1,14 +1,14 @@
+use crate::extract::ApiJson;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::Deserialize;
-use crate::extract::ApiJson;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
-use crate::routes::validate::{reject_control_chars};
+use crate::routes::validate::reject_control_chars;
 use crate::state::AppState;
 use common::{AppError, AppResult};
 use db::queries;

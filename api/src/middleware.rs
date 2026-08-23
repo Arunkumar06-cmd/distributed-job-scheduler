@@ -64,10 +64,7 @@ pub async fn request_id_middleware(req: Request, next: Next) -> Response {
 /// rejections, query-deserialization failures, 404/405 from the router)
 /// into the standard JSON error envelope. Responses already carrying
 /// `application/json` are left untouched — those come from AppError.
-pub async fn envelope_plain_errors(
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn envelope_plain_errors(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let status = res.status();
     if !(status.is_client_error() || status.is_server_error()) {
@@ -97,10 +94,7 @@ pub async fn envelope_plain_errors(
 
     // Drain the old body so the connection is reusable.
     let _ = axum::body::to_bytes(
-        std::mem::replace(
-            res.body_mut(),
-            axum::body::Body::empty(),
-        ),
+        std::mem::replace(res.body_mut(), axum::body::Body::empty()),
         64 * 1024,
     )
     .await;
@@ -116,7 +110,6 @@ pub async fn envelope_plain_errors(
     );
     res
 }
-
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {

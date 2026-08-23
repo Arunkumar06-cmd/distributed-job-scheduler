@@ -39,10 +39,11 @@ async fn archive_throughput() {
     )
     .await
     .unwrap();
-    let queue =
-        db::queries::create_queue(&pool, proj.id, "bench-q", "", 2, 5, 60, 3, None, None, None, 1)
-            .await
-            .unwrap();
+    let queue = db::queries::create_queue(
+        &pool, proj.id, "bench-q", "", 2, 5, 60, 3, None, None, None, 1,
+    )
+    .await
+    .unwrap();
 
     // Bulk-seed N completed jobs backdated 30 days in one statement.
     let t_seed = Instant::now();
@@ -63,7 +64,9 @@ async fn archive_throughput() {
     let mut moved_total = 0i64;
     let mut batches = 0;
     loop {
-        let moved = db::queries::archive_terminal_jobs(&pool, 5, BATCH).await.unwrap();
+        let moved = db::queries::archive_terminal_jobs(&pool, 5, BATCH)
+            .await
+            .unwrap();
         if moved == 0 {
             break;
         }

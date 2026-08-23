@@ -39,15 +39,29 @@ async fn race_replicas_never_double_execute() {
     let user = queries::create_user(&pool, &format!("race{}@t.io", Uuid::new_v4()), "h", "R")
         .await
         .unwrap();
-    let org = queries::create_organization(&pool, "Race Org", &format!("race-{}", Uuid::new_v4()), user.id)
-        .await
-        .unwrap();
-    let proj = queries::create_project(&pool, org.id, "P", &format!("race-{}", Uuid::new_v4()), "", user.id)
-        .await
-        .unwrap();
-    let queue = queries::create_queue(&pool, proj.id, "race-q", "", CAPACITY, 5, 60, 3, None, None, None, 1)
-        .await
-        .unwrap();
+    let org = queries::create_organization(
+        &pool,
+        "Race Org",
+        &format!("race-{}", Uuid::new_v4()),
+        user.id,
+    )
+    .await
+    .unwrap();
+    let proj = queries::create_project(
+        &pool,
+        org.id,
+        "P",
+        &format!("race-{}", Uuid::new_v4()),
+        "",
+        user.id,
+    )
+    .await
+    .unwrap();
+    let queue = queries::create_queue(
+        &pool, proj.id, "race-q", "", CAPACITY, 5, 60, 3, None, None, None, 1,
+    )
+    .await
+    .unwrap();
 
     let cfg = Arc::new(Config::from_env());
     let nats = async_nats::connect(&cfg.nats_url).await.unwrap();
@@ -67,14 +81,22 @@ async fn race_replicas_never_double_execute() {
     let mut worker_ids = Vec::new();
 
     for r in 0..REPLICAS {
-        let w = queries::upsert_worker(&pool, &format!("race-{r}-{}", Uuid::new_v4()), "0.1", "h", 4)
-            .await
-            .unwrap();
+        let w = queries::upsert_worker(
+            &pool,
+            &format!("race-{r}-{}", Uuid::new_v4()),
+            "0.1",
+            "h",
+            4,
+        )
+        .await
+        .unwrap();
         worker_ids.push(w.id);
 
         let registry = with_default_handlers().await;
         registry
-            .register(Arc::new(AlwaysFailHandler { message: "unused".into() }))
+            .register(Arc::new(AlwaysFailHandler {
+                message: "unused".into(),
+            }))
             .await;
 
         let consumer = Arc::new(WorkerConsumer::new(
@@ -113,7 +135,10 @@ async fn race_replicas_never_double_execute() {
                 max_delay_secs: 3600,
                 scheduled_for: None,
                 idempotency_key: None,
-                subject: format!("org.{}.proj.{}.queue.{}.standard", org.id, proj.id, queue.id),
+                subject: format!(
+                    "org.{}.proj.{}.queue.{}.standard",
+                    org.id, proj.id, queue.id
+                ),
             },
         )
         .await
@@ -125,8 +150,9 @@ async fn race_replicas_never_double_execute() {
     let publisher = outbox::publisher::Publisher::new(nats.clone());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let events =
-            queries::claim_outbox_batch(&pool, "race-relay", 100, 30).await.unwrap();
+        let events = queries::claim_outbox_batch(&pool, "race-relay", 100, 30)
+            .await
+            .unwrap();
         if events.is_empty() {
             if Instant::now() > deadline {
                 break;
@@ -144,10 +170,14 @@ async fn race_replicas_never_double_execute() {
             }
         }
         if !ok.is_empty() {
-            queries::clear_outbox_events(&pool, "race-relay", &ok).await.unwrap();
+            queries::clear_outbox_events(&pool, "race-relay", &ok)
+                .await
+                .unwrap();
         }
         if !failed.is_empty() {
-            queries::fail_outbox_events(&pool, "race-relay", &failed, 30).await.unwrap();
+            queries::fail_outbox_events(&pool, "race-relay", &failed, 30)
+                .await
+                .unwrap();
         }
     }
 
@@ -191,15 +221,19 @@ async fn race_replicas_never_double_execute() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(touched >= 2, "expected distribution across replicas, got {touched}");
+    assert!(
+        touched >= 2,
+        "expected distribution across replicas, got {touched}"
+    );
 
     // INVARIANT 3: capacity tokens all released.
-    let stuck_tokens: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM capacity_tokens WHERE queue_id=$1 AND job_id IS NOT NULL")
-            .bind(queue.id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let stuck_tokens: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM capacity_tokens WHERE queue_id=$1 AND job_id IS NOT NULL",
+    )
+    .bind(queue.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(stuck_tokens, 0, "capacity tokens leaked");
 
     shutdown.cancel();

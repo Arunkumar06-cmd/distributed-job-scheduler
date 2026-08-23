@@ -1,10 +1,10 @@
+use crate::extract::ApiJson;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
-use crate::extract::ApiJson;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
@@ -102,13 +102,12 @@ pub async fn upsert_membership(
     // Owner grants are immutable through this endpoint: ownership changes are a
     // deliberate transfer, and letting admins demote owners could leave an org
     // with no admin at all.
-    let target_role: Option<(String,)> = sqlx::query_as(
-        "SELECT role::text FROM org_memberships WHERE org_id = $1 AND user_id = $2",
-    )
-    .bind(org_id)
-    .bind(req.user_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let target_role: Option<(String,)> =
+        sqlx::query_as("SELECT role::text FROM org_memberships WHERE org_id = $1 AND user_id = $2")
+            .bind(org_id)
+            .bind(req.user_id)
+            .fetch_optional(&state.pool)
+            .await?;
     if matches!(target_role.as_ref().map(|(r,)| r.as_str()), Some("owner")) {
         return Err(AppError::Forbidden(
             "cannot modify an organization owner's role via this endpoint".to_string(),

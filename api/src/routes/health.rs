@@ -32,8 +32,9 @@ pub async fn stats(auth: AuthUser, State(state): State<AppState>) -> Json<serde_
     .await
     .unwrap_or_default();
 
-    let active_workers =
-        db::queries::count_active_workers(&state.pool, hb * 3).await.unwrap_or(0);
+    let active_workers = db::queries::count_active_workers(&state.pool, hb * 3)
+        .await
+        .unwrap_or(0);
 
     let mut m = std::collections::HashMap::new();
     let mut total = 0i64;
@@ -66,7 +67,10 @@ pub async fn stats(auth: AuthUser, State(state): State<AppState>) -> Json<serde_
 }
 
 fn escape_label(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 /// Prometheus text exposition format. System-wide counters (not tenant-scoped):
@@ -85,12 +89,11 @@ pub async fn metrics(_auth: AuthUser, State(state): State<AppState>) -> impl Int
         env!("CARGO_PKG_VERSION")
     );
 
-    let rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT status::text, COUNT(*)::int8 FROM jobs GROUP BY status",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT status::text, COUNT(*)::int8 FROM jobs GROUP BY status")
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
 
     let _ = writeln!(out, "# HELP jobflow_jobs_total Jobs by lifecycle state.");
     let _ = writeln!(out, "# TYPE jobflow_jobs_total gauge");
@@ -121,10 +124,7 @@ pub async fn metrics(_auth: AuthUser, State(state): State<AppState>) -> impl Int
         out,
         "# HELP jobflow_jobs_unknown_external_result Jobs awaiting outcome reconciliation."
     );
-    let _ = writeln!(
-        out,
-        "# TYPE jobflow_jobs_unknown_external_result gauge"
-    );
+    let _ = writeln!(out, "# TYPE jobflow_jobs_unknown_external_result gauge");
     let _ = writeln!(out, "jobflow_jobs_unknown_external_result {unknown}");
 
     let outbox_pending: i64 =
@@ -132,7 +132,10 @@ pub async fn metrics(_auth: AuthUser, State(state): State<AppState>) -> impl Int
             .fetch_one(&state.pool)
             .await
             .unwrap_or(0);
-    let _ = writeln!(out, "# HELP jobflow_outbox_pending Unpublished outbox events.");
+    let _ = writeln!(
+        out,
+        "# HELP jobflow_outbox_pending Unpublished outbox events."
+    );
     let _ = writeln!(out, "# TYPE jobflow_outbox_pending gauge");
     let _ = writeln!(out, "jobflow_outbox_pending {outbox_pending}");
 
@@ -167,19 +170,7 @@ pub async fn metrics(_auth: AuthUser, State(state): State<AppState>) -> impl Int
     // Execution-duration histogram over the last 24h, aggregated at scrape
     // time from the ledger — no agent or client-side instrumentation needed.
     let edges_ms = [100i64, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000];
-    let row: (
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-    ) = sqlx::query_as(
+    let row: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
         r#"SELECT
              COUNT(*)::int8,
              COALESCE(SUM(duration_ms), 0)::int8,
@@ -223,10 +214,17 @@ pub async fn metrics(_auth: AuthUser, State(state): State<AppState>) -> impl Int
         "jobflow_execution_duration_seconds_bucket{{le=\"+Inf\"}} {}",
         row.0
     );
-    let _ = writeln!(out, "jobflow_execution_duration_seconds_sum {:.3}", row.1 as f64 / 1000.0);
+    let _ = writeln!(
+        out,
+        "jobflow_execution_duration_seconds_sum {:.3}",
+        row.1 as f64 / 1000.0
+    );
     let _ = writeln!(out, "jobflow_execution_duration_seconds_count {}", row.0);
 
-    let _ = writeln!(out, "# HELP jobflow_db_pool_connections PgPool connections.");
+    let _ = writeln!(
+        out,
+        "# HELP jobflow_db_pool_connections PgPool connections."
+    );
     let _ = writeln!(out, "# TYPE jobflow_db_pool_connections gauge");
     let _ = writeln!(
         out,
@@ -245,7 +243,10 @@ pub async fn metrics(_auth: AuthUser, State(state): State<AppState>) -> impl Int
     );
 
     (
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
         out,
     )
 }

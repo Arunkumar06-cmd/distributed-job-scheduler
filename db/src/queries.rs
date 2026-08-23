@@ -34,8 +34,8 @@ pub async fn find_user_by_email(pool: &PgPool, email: &str) -> AppResult<Option<
         "SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND is_active = TRUE",
     )
     .bind(email)
-            .fetch_optional(pool)
-            .await?;
+    .fetch_optional(pool)
+    .await?;
     Ok(user)
 }
 
@@ -710,7 +710,11 @@ pub async fn queue_throughput(
 
     let (done_n, bad_n, avg_ms_raw) = day;
     let total = done_n + bad_n;
-    let rate = if total > 0 { done_n as f64 * 100.0 / total as f64 } else { 100.0 };
+    let rate = if total > 0 {
+        done_n as f64 * 100.0 / total as f64
+    } else {
+        100.0
+    };
     let avg_ms = avg_ms_raw;
     Ok((buckets, rate, avg_ms))
 }
@@ -954,7 +958,9 @@ async fn claim_job_inner(
             Some(row) => row,
             None => {
                 tx.rollback().await.ok();
-                return Err(common::AppError::NotFound(format!("job {job_id} not found")));
+                return Err(common::AppError::NotFound(format!(
+                    "job {job_id} not found"
+                )));
             }
         }
     };
@@ -1728,14 +1734,17 @@ pub async fn resolve_retry_defaults(
 
 /// Move up to `batch` terminal jobs older than `older_than_secs` into the
 /// archive twins. Returns the number of jobs archived.
-pub async fn archive_terminal_jobs(pool: &PgPool, older_than_days: i32, batch: i64) -> AppResult<i64> {
-    let moved: i32 = sqlx::query_scalar(
-        "SELECT archive_terminal_jobs(make_interval(days => $1), $2::int)",
-    )
-    .bind(older_than_days)
-    .bind(batch)
-    .fetch_one(pool)
-    .await?;
+pub async fn archive_terminal_jobs(
+    pool: &PgPool,
+    older_than_days: i32,
+    batch: i64,
+) -> AppResult<i64> {
+    let moved: i32 =
+        sqlx::query_scalar("SELECT archive_terminal_jobs(make_interval(days => $1), $2::int)")
+            .bind(older_than_days)
+            .bind(batch)
+            .fetch_one(pool)
+            .await?;
     Ok(moved as i64)
 }
 

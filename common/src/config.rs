@@ -56,12 +56,11 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
-        let heartbeat_interval_secs =
-            env_or("HEARTBEAT_INTERVAL_SECS", 5_u64).clamp(1, 300);
+        let heartbeat_interval_secs = env_or("HEARTBEAT_INTERVAL_SECS", 5_u64).clamp(1, 300);
         // Lease must comfortably exceed the heartbeat interval or live workers
         // get fenced while healthy.
-        let lease_duration_secs = env_or("LEASE_DURATION_SECS", 30_u64)
-            .clamp(heartbeat_interval_secs * 2, 3600);
+        let lease_duration_secs =
+            env_or("LEASE_DURATION_SECS", 30_u64).clamp(heartbeat_interval_secs * 2, 3600);
         Self {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgres:///job_scheduler".to_string()),
@@ -70,7 +69,9 @@ impl Config {
                 if env::var("RUST_ENV").as_deref() == Ok("production") {
                     panic!("JWT_SECRET must be set when RUST_ENV=production");
                 }
-                eprintln!("WARN: JWT_SECRET not set, using dev fallback — set JWT_SECRET env for prod");
+                eprintln!(
+                    "WARN: JWT_SECRET not set, using dev fallback — set JWT_SECRET env for prod"
+                );
                 "dev-secret-change-in-production-please-32bytes".to_string()
             }),
             api_host: env::var("API_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
@@ -165,13 +166,16 @@ mod tests {
 
     #[test]
     fn lease_is_always_at_least_twice_the_heartbeat() {
-        with_env(&[
-            ("HEARTBEAT_INTERVAL_SECS", "60"),
-            ("LEASE_DURATION_SECS", "10"),
-        ], |cfg| {
-            assert_eq!(cfg.heartbeat_interval_secs, 60);
-            assert_eq!(cfg.lease_duration_secs, 120);
-        });
+        with_env(
+            &[
+                ("HEARTBEAT_INTERVAL_SECS", "60"),
+                ("LEASE_DURATION_SECS", "10"),
+            ],
+            |cfg| {
+                assert_eq!(cfg.heartbeat_interval_secs, 60);
+                assert_eq!(cfg.lease_duration_secs, 120);
+            },
+        );
     }
 
     #[test]

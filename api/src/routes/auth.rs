@@ -1,11 +1,9 @@
-use axum::{extract::State, http::StatusCode, Json};
 use crate::extract::ApiJson;
+use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
-use crate::auth::{
-    create_token, hash_password, verify_kind, verify_password, TokenKind,
-};
+use crate::auth::{create_token, hash_password, verify_kind, verify_password, TokenKind};
 use crate::middleware::AuthUser;
 use crate::state::AppState;
 use common::{AppError, AppResult};

@@ -1,10 +1,10 @@
+use crate::extract::ApiJson;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
-use crate::extract::ApiJson;
 use std::collections::HashMap;
 use uuid::Uuid;
 use validator::Validate;

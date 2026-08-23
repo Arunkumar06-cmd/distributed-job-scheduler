@@ -1,13 +1,13 @@
+use crate::extract::ApiJson;
+use crate::routes::validate::reject_control_chars;
 use axum::{
     extract::{Path, Query, State},
     http::{header::HeaderName, HeaderValue, StatusCode},
-    Json,
     response::{IntoResponse, Response},
+    Json,
 };
 use serde::Deserialize;
-use crate::extract::ApiJson;
 use validator::Validate;
-use crate::routes::validate::reject_control_chars;
 
 use crate::middleware::AuthUser;
 use crate::state::AppState;
@@ -43,7 +43,10 @@ pub struct CreateQueueReq {
 /// by `PATCH /queues/:id { "is_paused": bool }` (RFC 8594 Sunset).
 fn deprecated(mut res: Response) -> Response {
     let h = res.headers_mut();
-    h.insert(HeaderName::from_static("deprecation"), HeaderValue::from_static("true"));
+    h.insert(
+        HeaderName::from_static("deprecation"),
+        HeaderValue::from_static("true"),
+    );
     h.insert(
         HeaderName::from_static("sunset"),
         HeaderValue::from_static("Sat, 31 Dec 2027 23:59:59 GMT"),
@@ -63,7 +66,9 @@ pub async fn create(
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
     reject_control_chars("name", &req.name)?;
-    if let Some(d) = req.description.as_deref() { reject_control_chars("description", d)?; }
+    if let Some(d) = req.description.as_deref() {
+        reject_control_chars("description", d)?;
+    }
     let proj = queries::get_project(&state.pool, req.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
@@ -98,9 +103,7 @@ pub async fn ensure_job_stream(state: &AppState, org_id: Uuid, project_id: Uuid,
     let Some(nats) = &state.nats else { return };
     let js = async_nats::jetstream::new(nats.clone());
     let stream_name = common::ids::nats_stream_name(&org_id, &project_id, &queue_id);
-    let subject_filter = format!(
-        "org.{org_id}.proj.{project_id}.queue.{queue_id}.>"
-    );
+    let subject_filter = format!("org.{org_id}.proj.{project_id}.queue.{queue_id}.>");
     if js.get_stream(&stream_name).await.is_ok() {
         return;
     }
@@ -183,7 +186,9 @@ pub async fn update(
     // same bar as create/pause/resume, not plain membership.
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
-    if let Some(d) = req.description.as_deref() { reject_control_chars("description", d)?; }
+    if let Some(d) = req.description.as_deref() {
+        reject_control_chars("description", d)?;
+    }
     let ctx = queries::authorize_queue(&state.pool, auth.user_id, queue_id)
         .await?
         .ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;
@@ -352,9 +357,7 @@ pub async fn batch_stats(
     for s in stats {
         by_id.insert(s.queue_id, s);
     }
-    let ordered: Vec<db::models::QueueStats> = queue_ids
-        .iter()
-        .filter_map(|id| by_id.remove(id))
-        .collect();
+    let ordered: Vec<db::models::QueueStats> =
+        queue_ids.iter().filter_map(|id| by_id.remove(id)).collect();
     Ok(Json(serde_json::json!(ordered)))
 }

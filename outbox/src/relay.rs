@@ -40,7 +40,7 @@ impl OutboxRelay {
             relay_id,
             batch_size: config.outbox_batch_size,
             poll_interval: Duration::from_millis(config.outbox_poll_interval_ms),
-            lease_secs: 30,
+            lease_secs: config.outbox_lease_secs as i64,
             shutdown,
         }
     }
@@ -82,28 +82,43 @@ impl OutboxRelay {
             return Ok(0);
         }
 
-        // Phase 2: publish (network I/O, NO db transaction held)
+        // Phase 2: publish (network I/O, NO db transaction held). Cancellation
+        // is honored between events; unattempted rows keep their lease and are
+        // reclaimed by whichever relay runs next.
         let mut published_ids: Vec<uuid::Uuid> = Vec::with_capacity(events.len());
         let mut failed: Vec<uuid::Uuid> = Vec::new();
 
         for event in &events {
+            if self.shutdown.is_cancelled() {
+                break;
+            }
             match self.publisher.publish(event).await {
                 Ok(()) => {
                     published_ids.push(event.id);
                 }
                 Err(e) => {
-                    warn!(event_id = %event.id, error = %e, "publish failed; will be reclaimed");
+                    warn!(event_id = %event.id, error = %e, "publish failed; backing off");
                     failed.push(event.id);
                 }
             }
         }
 
-        // Phase 3: clear successfully published rows (short transaction)
+        // Phase 3a: clear successfully published rows (short transaction)
         if !published_ids.is_empty() {
             if let Err(e) =
                 queries::clear_outbox_events(&self.pool, &self.relay_id, &published_ids).await
             {
                 error!(error = %e, "failed to clear outbox events (will be reclaimed after lease)");
+            }
+        }
+
+        // Phase 3b: release failed rows with exponential backoff instead of a
+        // fixed-lease drumbeat, so poison pills stop hammering the broker.
+        if !failed.is_empty() {
+            if let Err(e) =
+                queries::fail_outbox_events(&self.pool, &self.relay_id, &failed, 30).await
+            {
+                error!(error = %e, "failed to back off outbox events");
             }
         }
 

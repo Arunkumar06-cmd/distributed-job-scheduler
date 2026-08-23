@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::middleware::AuthUser;
 use crate::state::AppState;
-use common::{ids, AppError, AppResult};
+use common::{AppError, AppResult};
 use db::queries;
 use uuid::Uuid;
 
@@ -54,10 +54,13 @@ pub async fn list(
         offset,
     )
     .await?;
+    let total = queries::count_dlq_entries_for_user(&state.pool, auth.user_id, q.queue_id).await?;
     Ok(Json(serde_json::json!({
         "data": entries,
         "page": page,
-        "page_size": page_size
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) / page_size,
     })))
 }
 
@@ -79,9 +82,16 @@ pub async fn replay(
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
     queries::require_org_writer(&state.pool, auth.user_id, project.org_id).await?;
-    let subject = ids::nats_subject(&dlq.org_id, &dlq.project_id, &dlq.queue_id, 5);
-    let job =
-        queries::replay_dlq_entry(&state.pool, dlq_id, dlq.org_id, dlq.project_id, subject).await?;
+    let job = queries::replay_dlq_entry(&state.pool, dlq_id).await?;
+    queries::append_audit(
+        &state.pool,
+        auth.user_id,
+        Some(project.org_id),
+        "dlq.replay",
+        &dlq_id.to_string(),
+        serde_json::json!({"new_job_id": job.id}),
+    )
+    .await?;
     let _ = state.broadcast.send(format!("dlq.replayed:{}", dlq_id));
     Ok(Json(serde_json::json!(job)))
 }

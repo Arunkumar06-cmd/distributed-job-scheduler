@@ -13,6 +13,8 @@ use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 pub struct BatchListQuery {
     pub project_id: Uuid,
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
 }
 
 pub async fn list(
@@ -26,8 +28,15 @@ pub async fn list(
     if !queries::user_in_org(&state.pool, auth.user_id, project.org_id).await? {
         return Err(AppError::Forbidden("forbidden".to_string()));
     }
-    let batches = queries::list_batches(&state.pool, q.project_id).await?;
-    Ok(Json(serde_json::json!(batches)))
+    let page = q.page.unwrap_or(1).max(1);
+    let page_size = q.page_size.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * page_size;
+    let batches = queries::list_batches(&state.pool, q.project_id, page_size, offset).await?;
+    Ok(Json(serde_json::json!({
+        "data": batches,
+        "page": page,
+        "page_size": page_size,
+    })))
 }
 
 pub async fn get(

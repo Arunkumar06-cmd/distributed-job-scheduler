@@ -5,7 +5,7 @@ if ! command -v psql &> /dev/null; then echo "postgres not found, install via br
 if ! command -v nats-server &> /dev/null; then brew install nats-server; fi
 createdb job_scheduler 2>/dev/null || echo "DB exists"
 createdb job_scheduler_test 2>/dev/null || echo "test DB exists"
-psql -d job_scheduler -f db/migrations/0001_init.sql
+# Schema is applied by the api on startup via sqlx::migrate (tracked in _sqlx_migrations).
 echo "Starting NATS..."
 nats-server -js -sd /tmp/nats-js -p 4222 -m 8222 > /tmp/nats.log 2>&1 &
 echo "Building..."

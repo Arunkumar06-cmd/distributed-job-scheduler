@@ -10,5 +10,6 @@ pub mod organizations;
 pub mod projects;
 pub mod queues;
 pub mod scheduled;
+pub mod validate;
 pub mod workers;
 pub mod workflows;

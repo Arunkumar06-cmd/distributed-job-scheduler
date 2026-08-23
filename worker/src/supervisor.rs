@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use async_nats::jetstream;
 use common::Config;
@@ -9,9 +9,7 @@ use db::queries;
 use uuid::Uuid;
 
 use crate::consumer::WorkerConsumer;
-use crate::handler::{
-    AlwaysFailHandler, EchoHandler, ExternalPaymentHandler, HandlerRegistry, SleepHandler,
-};
+use crate::handler::HandlerRegistry;
 
 /// The worker supervisor: registers the worker, starts heartbeat,
 /// starts consumers for assigned subjects, and handles graceful shutdown.
@@ -48,17 +46,8 @@ impl WorkerSupervisor {
         }
     }
 
-    pub async fn with_default_handlers(self) -> Self {
-        self.registry.register(Arc::new(EchoHandler)).await;
-        self.registry.register(Arc::new(SleepHandler)).await;
-        self.registry
-            .register(Arc::new(ExternalPaymentHandler))
-            .await;
-        self.registry
-            .register(Arc::new(AlwaysFailHandler {
-                message: "intentional test failure".to_string(),
-            }))
-            .await;
+    pub async fn with_default_handlers(mut self) -> Self {
+        self.registry = crate::handler::with_default_handlers().await;
         self
     }
 
@@ -93,15 +82,14 @@ impl WorkerSupervisor {
 
         for subject in self.subjects.clone() {
             let stream_name = stream_name_for_subject(&subject);
-            let consumer = WorkerConsumer::new(
+            let consumer = Arc::new(WorkerConsumer::new(
                 self.pool.clone(),
                 js.clone(),
                 self.worker_id,
-                self.worker_name.clone(),
                 self.config.clone(),
                 self.registry.clone(),
                 self.shutdown.clone(),
-            );
+            ));
             let subject_clone = subject.clone();
             let stream_clone = stream_name.clone();
             let handle = tokio::spawn(async move {
@@ -120,7 +108,9 @@ impl WorkerSupervisor {
             }
         }
 
-        // Graceful shutdown: stop accepting new work, wait for running jobs
+        // Graceful shutdown: stop accepting new work, wait for consumers,
+        // then wait for in-flight jobs to reach a terminal state (or lose
+        // their leases) before marking the worker stopped.
         self.shutdown.cancel();
         info!(
             "waiting for consumers to drain (grace: {}s)",
@@ -131,6 +121,24 @@ impl WorkerSupervisor {
             tokio::time::Instant::now() + Duration::from_secs(self.config.shutdown_grace_secs);
         for handle in consumer_handles {
             let _ = tokio::time::timeout_at(deadline, handle).await;
+        }
+
+        let drain_start = tokio::time::Instant::now();
+        loop {
+            let running: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM jobs WHERE lease_owner = $1 AND status IN ('RUNNING'::job_status, 'CLAIMED'::job_status)",
+            )
+            .bind(self.worker_id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
+            if running == 0 || drain_start.elapsed() >= Duration::from_secs(self.config.shutdown_grace_secs) {
+                if running > 0 {
+                    warn!(running, "drain grace exhausted with jobs still active; leases will expire");
+                }
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
         // Stop heartbeat
@@ -174,7 +182,29 @@ async fn heartbeat_loop(
                     }
                 };
 
-                if let Err(e) = queries::heartbeat(&pool, worker_id, running as i32, 0, 0).await {
+                // Cumulative per-worker outcome totals from the execution
+                // ledger — real numbers, not the constant zeros this used to
+                // report.
+                let (processed, failed): (i64, i64) = match sqlx::query_as(
+                    r#"SELECT
+                         COALESCE(SUM((status = 'COMPLETED')::int), 0),
+                         COALESCE(SUM((status IN ('FAILED', 'ABANDONED'))::int), 0)
+                       FROM job_executions WHERE worker_id = $1"#,
+                )
+                .bind(worker_id)
+                .fetch_one(&pool)
+                .await
+                {
+                    Ok(t) => t,
+                    Err(e) => {
+                        error!(error = %e, "heartbeat: failed to count outcomes");
+                        (0, 0)
+                    }
+                };
+
+                if let Err(e) =
+                    queries::heartbeat(&pool, worker_id, running as i32, processed, failed).await
+                {
                     error!(error = %e, "heartbeat failed");
                 }
             }
@@ -187,11 +217,35 @@ fn stream_name_for_subject(subject: &str) -> String {
         return "JOBS_WILDCARD".to_string();
     }
 
-    // org.{org}.proj.{proj}.queue.{queue}.{tier} -> JOBS_{org}_{proj}_{queue}
+    // org.{org}.proj.{proj}.queue.{queue}[.shard.{n}].{tier} -> JOBS_{org}_{proj}_{queue}
     let parts: Vec<&str> = subject.split('.').collect();
     if parts.len() >= 6 && parts[0] == "org" && parts[2] == "proj" && parts[4] == "queue" {
         format!("JOBS_{}_{}_{}", parts[1], parts[3], parts[5]).replace('-', "_")
     } else {
         format!("JOBS_{}", subject.replace(['.', '-'], "_"))
+    }
+}
+
+/// Provision the queue's stream if missing. Awaited by callers before consumer
+/// creation; failures are logged, not fatal (consumer creation retries).
+pub async fn ensure_stream(
+    js: &jetstream::Context,
+    stream_name: &str,
+    subject_filter: &str,
+) {
+    match js.get_stream(stream_name).await {
+        Ok(_) => {}
+        Err(_) => match js
+            .create_stream(jetstream::stream::Config {
+                name: stream_name.to_string(),
+                subjects: vec![subject_filter.to_string()],
+                max_messages: 100_000,
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(_) => info!(stream = stream_name, "created stream"),
+            Err(e) => warn!(error = %e, stream = stream_name, "could not create stream"),
+        },
     }
 }

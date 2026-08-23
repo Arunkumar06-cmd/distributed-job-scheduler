@@ -9,10 +9,7 @@ db = { path = "../db" }
 domain = { path = "../domain" }
 tokio.workspace = true
 tracing.workspace = true
-uuid.workspace = true
 chrono.workspace = true
-chrono-tz.workspace = true
-cron.workspace = true
 anyhow.workspace = true
 tokio-util.workspace = true
 sqlx.workspace = true

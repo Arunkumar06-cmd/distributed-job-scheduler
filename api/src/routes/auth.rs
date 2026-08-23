@@ -2,7 +2,9 @@ use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
-use crate::auth::{create_token, hash_password, verify_password};
+use crate::auth::{
+    create_token, hash_password, verify_kind, verify_password, TokenKind,
+};
 use crate::middleware::AuthUser;
 use crate::state::AppState;
 use common::{AppError, AppResult};
@@ -26,10 +28,30 @@ pub struct LoginReq {
     pub password: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RefreshReq {
+    pub refresh_token: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AuthResp {
+    /// Backwards-compatible alias for the access token.
     pub token: String,
+    pub access_token: String,
+    pub refresh_token: String,
     pub user: serde_json::Value,
+}
+
+fn issue_pair(user_id: uuid::Uuid, email: &str, state: &AppState) -> AppResult<(String, String)> {
+    let access =
+        create_token(user_id, email, TokenKind::Access, &state.config).map_err(internal)?;
+    let refresh =
+        create_token(user_id, email, TokenKind::Refresh, &state.config).map_err(internal)?;
+    Ok((access, refresh))
+}
+
+fn internal(e: impl std::fmt::Display) -> AppError {
+    AppError::Internal(e.to_string())
 }
 
 pub async fn register(
@@ -38,14 +60,15 @@ pub async fn register(
 ) -> AppResult<(StatusCode, Json<AuthResp>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
-    let hash = hash_password(&req.password).map_err(|e| AppError::Internal(e.to_string()))?;
+    let hash = hash_password(&req.password).map_err(internal)?;
     let user = queries::create_user(&state.pool, &req.email, &hash, &req.display_name).await?;
-    let token = create_token(user.id, &user.email, &state.config)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let (access, refresh) = issue_pair(user.id, &user.email, &state)?;
     Ok((
         StatusCode::CREATED,
         Json(AuthResp {
-            token,
+            token: access.clone(),
+            access_token: access,
+            refresh_token: refresh,
             user: serde_json::json!({
                 "id": user.id,
                 "email": user.email,
@@ -64,15 +87,43 @@ pub async fn login(
     let user = queries::find_user_by_email(&state.pool, &req.email)
         .await?
         .ok_or(AppError::Unauthorized)?;
-    let ok = verify_password(&user.password_hash, &req.password)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let ok = verify_password(&user.password_hash, &req.password).map_err(internal)?;
     if !ok {
         return Err(AppError::Unauthorized);
     }
-    let token = create_token(user.id, &user.email, &state.config)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let (access, refresh) = issue_pair(user.id, &user.email, &state)?;
     Ok(Json(AuthResp {
-        token,
+        token: access.clone(),
+        access_token: access,
+        refresh_token: refresh,
+        user: serde_json::json!({
+            "id": user.id,
+            "email": user.email,
+            "display_name": user.display_name,
+        }),
+    }))
+}
+
+/// Rotate a refresh token into a fresh access+refresh pair. Old refresh tokens
+/// stay valid until expiry (no reuse-detection store at this tier); the short
+/// access TTL bounds any stolen-credential window to one hour.
+pub async fn refresh(
+    State(state): State<AppState>,
+    Json(req): Json<RefreshReq>,
+) -> AppResult<Json<AuthResp>> {
+    let data = verify_kind(&req.refresh_token, TokenKind::Refresh, &state.config)
+        .map_err(|_| AppError::Unauthorized)?;
+    let user = queries::find_user_by_id(&state.pool, data.claims.sub)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    if !user.is_active {
+        return Err(AppError::Unauthorized);
+    }
+    let (access, refresh) = issue_pair(user.id, &user.email, &state)?;
+    Ok(Json(AuthResp {
+        token: access.clone(),
+        access_token: access,
+        refresh_token: refresh,
         user: serde_json::json!({
             "id": user.id,
             "email": user.email,

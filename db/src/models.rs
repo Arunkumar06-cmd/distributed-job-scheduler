@@ -1,10 +1,11 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 
 use domain::{BatchStatus, ExecutionStatus, JobKind, JobStatus, RetryStrategy, WorkerStatus};
 
-#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+// No Deserialize: password hashes must never round-trip through user input.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct User {
     pub id: Uuid,
     pub email: String,

@@ -17,10 +17,6 @@ impl Publisher {
         Self { js }
     }
 
-    pub async fn new_async(client: async_nats::Client) -> anyhow::Result<Self> {
-        Ok(Self::new(client))
-    }
-
     pub async fn ensure_stream(
         &self,
         stream_name: &str,

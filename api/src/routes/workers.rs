@@ -14,7 +14,8 @@ pub async fn list(
     State(state): State<AppState>,
 ) -> AppResult<Json<serde_json::Value>> {
     // Any authenticated user can see workers (could restrict to admin later)
-    let workers = queries::list_workers(&state.pool).await?;
+    let hb = state.config.heartbeat_interval_secs as i64;
+    let workers = queries::list_workers(&state.pool, hb * 3, hb * 12).await?;
     Ok(Json(serde_json::json!(workers)))
 }
 
@@ -23,7 +24,8 @@ pub async fn get(
     State(state): State<AppState>,
     Path(worker_id): Path<Uuid>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let w = queries::get_worker(&state.pool, worker_id)
+    let hb = state.config.heartbeat_interval_secs as i64;
+    let w = queries::get_worker(&state.pool, worker_id, hb * 3, hb * 12)
         .await?
         .ok_or_else(|| AppError::NotFound("worker not found".to_string()))?;
     Ok(Json(serde_json::json!(w)))

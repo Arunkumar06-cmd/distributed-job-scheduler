@@ -1,34 +1,3154 @@
 {
   "openapi": "3.0.3",
-  "info": { "title": "Distributed Job Scheduler", "version": "0.1.0", "description": "Reliable async job scheduling with Postgres + NATS" },
-  "servers": [{ "url": "http://localhost:8080" }],
+  "info": {
+    "title": "Jobflow \u2014 Distributed Job Scheduler API",
+    "version": "1.0.0",
+    "description": "Multi-tenant job scheduling platform. Versioned contract lives under /api/v1; identical unversioned aliases exist for legacy clients and are frozen. Conventions: JSON error envelope {error:{code,message},request_id}; offset pagination envelopes carry total/total_pages; Idempotency-Key header beats body idempotency_key on job creation; PATCH mutates stored state (POST verb-subresources are actions only, deprecated where they duplicate PATCH). Access tokens expire hourly \u2014 rotate via /auth/refresh."
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "Stable versioned surface"
+    }
+  ],
+  "tags": [
+    {
+      "name": "auth"
+    },
+    {
+      "name": "organizations"
+    },
+    {
+      "name": "projects"
+    },
+    {
+      "name": "queues"
+    },
+    {
+      "name": "jobs"
+    },
+    {
+      "name": "schedules"
+    },
+    {
+      "name": "workers"
+    },
+    {
+      "name": "dlq"
+    },
+    {
+      "name": "batches"
+    },
+    {
+      "name": "workflows"
+    },
+    {
+      "name": "events"
+    },
+    {
+      "name": "observability"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
   "components": {
-    "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" } },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
     "schemas": {
-      "Job": { "type": "object", "properties": { "id": { "type": "string", "format": "uuid" }, "queue_id": { "type": "string", "format": "uuid" }, "status": { "type": "string", "enum": ["SCHEDULED","QUEUED","CLAIMED","RUNNING","RETRY_WAIT","COMPLETED","FAILED"] }, "payload": { "type": "object" }, "priority": { "type": "integer" }, "attempt": { "type": "integer" } } }
+      "ErrorBody": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          },
+          "request_id": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "NotFound",
+              "Unauthorized",
+              "Forbidden",
+              "Conflict",
+              "Validation",
+              "QueuePaused",
+              "QueueAtCapacity",
+              "RateLimited",
+              "StaleLease",
+              "Internal"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "RegisterReq": {
+        "type": "object",
+        "required": [
+          "email",
+          "password",
+          "display_name"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        }
+      },
+      "LoginReq": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "RefreshReq": {
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "properties": {
+          "refresh_token": {
+            "type": "string"
+          }
+        }
+      },
+      "AuthResp": {
+        "type": "object",
+        "required": [
+          "token",
+          "access_token",
+          "refresh_token",
+          "user"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "alias of access_token"
+          },
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "user": {
+            "type": "object"
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CreateOrgReq": {
+        "type": "object",
+        "required": [
+          "name",
+          "slug"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "slug": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 50
+          }
+        }
+      },
+      "UpsertMembershipReq": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "role"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member",
+              "viewer"
+            ]
+          }
+        }
+      },
+      "MembershipResponse": {
+        "type": "object",
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateProjectReq": {
+        "type": "object",
+        "required": [
+          "org_id",
+          "name",
+          "slug"
+        ],
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateQueueReq": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "name"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "max_concurrency": {
+            "type": "integer",
+            "default": 5
+          },
+          "default_priority": {
+            "type": "integer",
+            "default": 5
+          },
+          "ack_wait_secs": {
+            "type": "integer",
+            "default": 60
+          },
+          "max_receives": {
+            "type": "integer",
+            "default": 3
+          },
+          "retry_policy_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "rate_limit": {
+            "type": "integer",
+            "nullable": true
+          },
+          "rate_window_secs": {
+            "type": "integer",
+            "default": 60
+          },
+          "shard_count": {
+            "type": "integer",
+            "default": 1,
+            "maximum": 128
+          }
+        }
+      },
+      "UpdateQueueReq": {
+        "type": "object",
+        "properties": {
+          "is_paused": {
+            "type": "boolean"
+          },
+          "retry_policy_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "max_concurrency": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "default_priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "ack_wait_secs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "max_receives": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateJobReq": {
+        "type": "object",
+        "required": [
+          "queue_id",
+          "payload"
+        ],
+        "properties": {
+          "queue_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payload": {
+            "type": "object",
+            "description": "JSON object \u2264256KiB; 'type' field selects the worker handler"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "max_attempts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "retry_strategy": {
+            "type": "string",
+            "enum": [
+              "fixed",
+              "linear",
+              "exponential"
+            ]
+          },
+          "base_delay_secs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_delay_secs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "scheduled_for": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "immediate",
+              "delayed",
+              "scheduled",
+              "recurring",
+              "batch"
+            ],
+            "description": "alias: type"
+          }
+        }
+      },
+      "BatchCreateReq": {
+        "type": "object",
+        "required": [
+          "queue_id",
+          "jobs"
+        ],
+        "properties": {
+          "queue_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "jobs": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "required": [
+                "payload"
+              ],
+              "properties": {
+                "payload": {
+                  "type": "object"
+                },
+                "priority": {
+                  "type": "integer"
+                },
+                "idempotency_key": {
+                  "type": "string",
+                  "maxLength": 200
+                }
+              }
+            }
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "max_attempts": {
+            "type": "integer"
+          },
+          "retry_strategy": {
+            "type": "string",
+            "enum": [
+              "fixed",
+              "linear",
+              "exponential"
+            ]
+          },
+          "base_delay_secs": {
+            "type": "integer"
+          },
+          "max_delay_secs": {
+            "type": "integer"
+          }
+        }
+      },
+      "BatchCreated": {
+        "type": "object",
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/Batch"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            }
+          }
+        }
+      },
+      "CreateScheduledReq": {
+        "type": "object",
+        "required": [
+          "queue_id",
+          "name",
+          "payload"
+        ],
+        "properties": {
+          "queue_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "job_type": {
+            "type": "string",
+            "enum": [
+              "immediate",
+              "delayed",
+              "scheduled",
+              "recurring",
+              "batch"
+            ],
+            "default": "scheduled"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "cron_expr": {
+            "type": "string",
+            "description": "6-field cron incl. seconds"
+          },
+          "timezone": {
+            "type": "string",
+            "default": "UTC"
+          },
+          "run_once_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "JobStatus": {
+        "type": "string",
+        "enum": [
+          "SCHEDULED",
+          "QUEUED",
+          "CLAIMED",
+          "RUNNING",
+          "RETRY_WAIT",
+          "COMPLETED",
+          "FAILED",
+          "CANCELLED",
+          "WAITING",
+          "UNKNOWN_EXTERNAL_RESULT"
+        ]
+      },
+      "Job": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "queue_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "workflow_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "shard_id": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "max_attempts": {
+            "type": "integer"
+          },
+          "retry_strategy": {
+            "type": "string"
+          },
+          "next_retry_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "error_message": {
+            "type": "string",
+            "nullable": true
+          },
+          "result": {},
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "JobPage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            }
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "total_pages": {
+            "type": "integer"
+          }
+        }
+      },
+      "JobExecution": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "worker_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "lease_epoch": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "STARTED",
+              "COMPLETED",
+              "FAILED",
+              "ABANDONED"
+            ]
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "nullable": true
+          },
+          "nats_msg_id": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "JobLog": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "level": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ScheduledJob": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "queue_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "job_type": {
+            "type": "string"
+          },
+          "cron_expr": {
+            "type": "string",
+            "nullable": true
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "run_once_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "next_fire_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "WorkerView": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "worker_name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "max_concurrency": {
+            "type": "integer"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "last_heartbeat_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ONLINE",
+              "STALE",
+              "OFFLINE"
+            ]
+          },
+          "running_jobs": {
+            "type": "integer"
+          }
+        }
+      },
+      "DeadLetterEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "max_attempts_exceeded",
+              "permanent_failure",
+              "cancelled"
+            ]
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "final_error": {
+            "type": "string",
+            "nullable": true
+          },
+          "moved_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "replayed_to_job_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          }
+        }
+      },
+      "DlqPage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeadLetterEntry"
+            }
+          },
+          "page": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "total_pages": {
+            "type": "integer"
+          }
+        }
+      },
+      "FailureSummary": {
+        "type": "object",
+        "properties": {
+          "dlq_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "root_cause": {
+            "type": "string",
+            "nullable": true
+          },
+          "remediation": {
+            "type": "string",
+            "nullable": true
+          },
+          "model": {
+            "type": "string"
+          }
+        }
+      },
+      "QueueStats": {
+        "type": "object",
+        "properties": {
+          "queue_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "queued": {
+            "type": "integer"
+          },
+          "running": {
+            "type": "integer"
+          },
+          "retry_wait": {
+            "type": "integer"
+          },
+          "completed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "scheduled": {
+            "type": "integer"
+          },
+          "claimed": {
+            "type": "integer"
+          },
+          "dlq": {
+            "type": "integer"
+          }
+        }
+      },
+      "Batch": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "queue_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "total_jobs": {
+            "type": "integer"
+          },
+          "completed_jobs": {
+            "type": "integer"
+          },
+          "failed_jobs": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "PARTIALLY_COMPLETED",
+              "COMPLETED",
+              "FAILED"
+            ]
+          }
+        }
+      },
+      "BatchPage": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Batch"
+            }
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          }
+        }
+      },
+      "BatchDetail": {
+        "type": "object",
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/Batch"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            }
+          }
+        }
+      },
+      "WorkflowJobSpec": {
+        "type": "object",
+        "required": [
+          "queue_id",
+          "payload"
+        ],
+        "properties": {
+          "queue_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payload": {
+            "type": "object"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          }
+        }
+      },
+      "WorkflowEdgeSpec": {
+        "type": "object",
+        "required": [
+          "parent",
+          "child"
+        ],
+        "properties": {
+          "parent": {
+            "type": "integer"
+          },
+          "child": {
+            "type": "integer"
+          }
+        }
+      },
+      "CreateWorkflowReq": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "name",
+          "jobs"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowJobSpec"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowEdgeSpec"
+            }
+          }
+        }
+      },
+      "WorkflowResp": {
+        "type": "object",
+        "properties": {
+          "workflow_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "WorkflowDetail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "RUNNING",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "description": "derived live"
+          },
+          "stored_status": {
+            "type": "string"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parent": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "child": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ProjectSnapshot": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "StatsSummary": {
+        "type": "object",
+        "properties": {
+          "jobs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "workers": {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "integer"
+              }
+            }
+          },
+          "db": {
+            "type": "object",
+            "properties": {
+              "pool_size": {
+                "type": "integer"
+              },
+              "idle": {
+                "type": "integer"
+              }
+            }
+          },
+          "nats": {
+            "type": "object",
+            "properties": {
+              "connected": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "Organization": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "Queue": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "max_concurrency": {
+            "type": "integer"
+          },
+          "is_paused": {
+            "type": "boolean"
+          },
+          "default_priority": {
+            "type": "integer"
+          },
+          "rate_limit": {
+            "type": "integer",
+            "nullable": true
+          },
+          "shard_count": {
+            "type": "integer"
+          }
+        }
+      }
     }
   },
-  "security": [{ "bearerAuth": [] }],
   "paths": {
-    "/health": { "get": { "summary": "Health", "responses": { "200": { "description": "ok" } } } },
-    "/auth/register": { "post": { "summary": "Register", "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "email": { "type": "string" }, "password": { "type": "string" }, "display_name": { "type": "string" } } } } } } } },
-    "/auth/login": { "post": { "summary": "Login" } },
-    "/organizations": { "post": { "summary": "Create org" }, "get": { "summary": "List orgs" } },
-    "/organizations/{id}/members": { "post": { "summary": "Add or update organization member role" } },
-    "/projects": { "post": { "summary": "Create project" }, "get": { "summary": "List" } },
-    "/queues": { "post": { "summary": "Create queue" }, "get": { "summary": "List" } },
-    "/queues/{id}/stats": { "get": { "summary": "Queue stats" } },
-    "/queues/{id}/pause": { "post": { "summary": "Pause" } },
-    "/queues/{id}/resume": { "post": { "summary": "Resume" } },
-    "/jobs": { "post": { "summary": "Create job" }, "get": { "summary": "List" } },
-    "/jobs/batch": { "post": { "summary": "Batch" } },
-    "/jobs/{id}": { "get": { "summary": "Get job" } },
-    "/jobs/{id}/retry": { "post": { "summary": "Retry" } },
-    "/scheduled-jobs": { "post": { "summary": "Create scheduled" }, "get": { "summary": "List" } },
-    "/dlq/{id}/summary": { "get": { "summary": "Get AI failure summary" } },
-    "/workers": { "get": { "summary": "List workers" } },
-    "/metrics": { "get": { "summary": "Metrics" } },
-    "/events/stream": { "get": { "summary": "Project-scoped SSE snapshots" } },
-    "/events/ws": { "get": { "summary": "Project-scoped WebSocket snapshots" } }
+    "/auth/register": {
+      "post": {
+        "summary": "Register a user",
+        "security": [],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResp"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Email already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "summary": "Login",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResp"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "summary": "Rotate refresh token into a new access+refresh pair",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResp"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "summary": "Current user",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/organizations": {
+      "post": {
+        "summary": "Create organization (caller becomes owner)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Organization"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Slug conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOrgReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "organizations"
+        ]
+      },
+      "get": {
+        "summary": "List my organizations",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Organization"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "organizations"
+        ]
+      }
+    },
+    "/organizations/{id}": {
+      "get": {
+        "summary": "Get organization",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Organization"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "organizations"
+        ]
+      }
+    },
+    "/organizations/{id}/members": {
+      "post": {
+        "summary": "Upsert membership (admin; owner roles immutable here)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertMembershipReq"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "organizations"
+        ]
+      }
+    },
+    "/projects": {
+      "post": {
+        "summary": "Create project (org admin)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "projects"
+        ]
+      },
+      "get": {
+        "summary": "List projects (optionally scoped by org)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Project"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/projects/{id}": {
+      "get": {
+        "summary": "Get project",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/queues": {
+      "post": {
+        "summary": "Create queue (org admin); seeds capacity tokens + rate bucket atomically",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateQueueReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "queues"
+        ]
+      },
+      "get": {
+        "summary": "List queues in project",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Queue"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "queues"
+        ]
+      }
+    },
+    "/queues/{id}": {
+      "get": {
+        "summary": "Get queue config (any member)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queue"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "queues"
+        ]
+      },
+      "patch": {
+        "summary": "Update configuration or pause state (org admin)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateQueueReq"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "queues"
+        ]
+      }
+    },
+    "/queues/{id}/pause": {
+      "post": {
+        "summary": "Pause queue",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queue"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "deprecated": true,
+        "description": "Compatibility alias for PATCH /queues/{id} with is_paused=true. Returns Deprecation + Sunset headers.",
+        "tags": [
+          "queues"
+        ]
+      }
+    },
+    "/queues/{id}/resume": {
+      "post": {
+        "summary": "Resume queue",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queue"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "deprecated": true,
+        "description": "Compatibility alias for PATCH /queues/{id} with is_paused=false. Returns Deprecation + Sunset headers.",
+        "tags": [
+          "queues"
+        ]
+      }
+    },
+    "/queues/{id}/stats": {
+      "get": {
+        "summary": "Per-status job counts + DLQ size",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueStats"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "queues"
+        ]
+      }
+    },
+    "/queues/batch-stats": {
+      "get": {
+        "summary": "Stats for up to 100 queues (comma-separated ids)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/QueueStats"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated queue ids"
+          }
+        ],
+        "tags": [
+          "queues"
+        ]
+      }
+    },
+    "/jobs": {
+      "post": {
+        "summary": "Submit a job (transactional job+outbox insert)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Queue rate limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJobReq"
+              }
+            }
+          }
+        },
+        "description": "Idempotency-Key header beats body idempotency_key. Delayed/scheduled jobs skip the outbox until promoted.",
+        "tags": [
+          "jobs"
+        ]
+      },
+      "get": {
+        "summary": "List jobs visible to the user",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "queue_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "SCHEDULED",
+                "QUEUED",
+                "CLAIMED",
+                "RUNNING",
+                "RETRY_WAIT",
+                "COMPLETED",
+                "FAILED",
+                "CANCELLED",
+                "WAITING",
+                "UNKNOWN_EXTERNAL_RESULT"
+              ]
+            }
+          },
+          {
+            "name": "priority_min",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "worker_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "style": "form"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "style": "form"
+          }
+        ],
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/batch": {
+      "post": {
+        "summary": "Create up to 1000 jobs + batch record atomically",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCreateReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{id}": {
+      "get": {
+        "summary": "Get job",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{id}/retry": {
+      "post": {
+        "summary": "Manually requeue a FAILED/RETRY_WAIT job",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not retryable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{id}/executions": {
+      "get": {
+        "summary": "Execution ledger (one row per attempt)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobExecution"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/jobs/{id}/logs": {
+      "get": {
+        "summary": "Recent logs",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobLog"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ],
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/scheduled-jobs": {
+      "post": {
+        "summary": "Create cron or one-shot schedule (exactly one of cron_expr/run_once_at)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJob"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateScheduledReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "schedules"
+        ]
+      },
+      "get": {
+        "summary": "List schedules",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ScheduledJob"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "queue_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "schedules"
+        ]
+      }
+    },
+    "/scheduled-jobs/{id}": {
+      "delete": {
+        "summary": "Delete schedule (cascades occurrences)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "schedules"
+        ]
+      }
+    },
+    "/workers": {
+      "get": {
+        "summary": "List workers with liveness derived from heartbeat interval",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerView"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "workers"
+        ]
+      }
+    },
+    "/workers/{id}": {
+      "get": {
+        "summary": "Get worker",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerView"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "workers"
+        ]
+      }
+    },
+    "/dlq": {
+      "get": {
+        "summary": "List dead-letter entries",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DlqPage"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "queue_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "style": "form"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "style": "form"
+          }
+        ],
+        "tags": [
+          "dlq"
+        ]
+      }
+    },
+    "/dlq/{id}/replay": {
+      "post": {
+        "summary": "Replay entry as a fresh inheriting job",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already replayed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "dlq"
+        ]
+      }
+    },
+    "/dlq/{id}/summary": {
+      "get": {
+        "summary": "AI failure summary if generated",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailureSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "dlq"
+        ]
+      }
+    },
+    "/batches": {
+      "get": {
+        "summary": "List batches",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchPage"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "style": "form"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "style": "form"
+          }
+        ],
+        "tags": [
+          "batches"
+        ]
+      }
+    },
+    "/batches/{id}": {
+      "get": {
+        "summary": "Get batch with its jobs",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchDetail"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "batches"
+        ]
+      }
+    },
+    "/workflows": {
+      "post": {
+        "summary": "Create a DAG of jobs (cycle-checked, shard-aware roots)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowResp"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkflowReq"
+              }
+            }
+          }
+        },
+        "tags": [
+          "workflows"
+        ]
+      }
+    },
+    "/workflows/{id}": {
+      "get": {
+        "summary": "Get workflow with derived live status",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowDetail"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "workflows"
+        ]
+      }
+    },
+    "/events/stream": {
+      "get": {
+        "summary": "Server-sent project snapshots (2s cadence)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream frames of ProjectSnapshot",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSnapshot"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/events/ws": {
+      "get": {
+        "summary": "WebSocket snapshots (same payload as SSE)",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "access_tokenQueryParam": []
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching protocols"
+          }
+        },
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/stats": {
+      "get": {
+        "summary": "Dashboard JSON summary (tenant-scoped)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsSummary"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "observability"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus text exposition (system-wide)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prometheus format",
+            "content": {
+              "text/plain; version=0.0.4": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "observability"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Liveness probe",
+        "security": [],
+        "tags": [
+          "observability"
+        ],
+        "responses": {
+          "200": {
+            "description": "ok"
+          }
+        }
+      }
+    }
   }
 }

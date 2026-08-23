@@ -38,6 +38,10 @@ services:
       API_PORT: 8080
       API_POOL_SIZE: 10
       SCHEDULER_POOL_SIZE: 5
+      OUTBOX_POOL_SIZE: 10
+      OUTBOX_LEASE_SECS: 30
+      OUTBOX_POLL_INTERVAL_MS: 250
+      AI_SUMMARIES_ENABLED: "false"
     ports:
       - "8080:8080"
     depends_on:

@@ -84,7 +84,8 @@ erDiagram
         integer max_concurrency
         boolean is_paused
         integer rate_limit
-    }
+        integer rate_window_secs
+        integer shard_count
     capacity_tokens {
         uuid id PK
         uuid queue_id FK
@@ -118,6 +119,7 @@ erDiagram
     jobs {
         uuid id PK
         uuid queue_id FK
+        integer shard_id
         uuid batch_id FK
         uuid workflow_id FK
         uuid token_id FK
@@ -128,7 +130,9 @@ erDiagram
         integer priority
         integer attempt
         integer max_attempts
-        string idempotency_key
+        string idempotency_key UK
+        bigint lease_epoch
+        timestamp lease_expires_at
         timestamp scheduled_for
         timestamp next_retry_at
     }
@@ -168,6 +172,7 @@ erDiagram
         integer max_concurrency
         boolean is_active
         timestamp last_heartbeat_at
+        timestamp stopped_at
     }
     worker_heartbeats {
         bigint id PK
@@ -181,6 +186,7 @@ erDiagram
         uuid id PK
         uuid queue_id FK
         string name
+        string job_type CHECK
         string cron_expr
         string timezone
         timestamp run_once_at
@@ -201,14 +207,19 @@ erDiagram
         string subject
         string nats_msg_id
         timestamp published_at
+        int publish_attempts
+        timestamp relay_locked_until
     }
     dead_letter_entries {
         uuid id PK
         uuid job_id FK
         uuid queue_id
-        string reason
+        string reason enum
         integer attempt
         string final_error
+        jsonb payload
+        uuid replayed_to_job_id FK
+        timestamp replayed_at
     }
     failure_summaries {
         uuid id PK
@@ -217,6 +228,31 @@ erDiagram
         string summary
         string remediation
         string model
+    }
+    audit_log {
+        bigint id PK
+        uuid actor_id FK
+        uuid org_id
+        string action
+        string target
+        jsonb details
+        timestamp created_at
+    }
+    jobs_archive {
+        uuid id PK
+        uuid queue_id
+    }
+    job_executions_archive {
+        uuid id PK
+        uuid job_id
+    }
+    job_logs_archive {
+        bigint id PK
+        uuid job_id
+    }
+    dead_letter_entries_archive {
+        uuid id PK
+        uuid job_id
     }
 ```
 
@@ -244,7 +280,29 @@ idx_executions_job_started ON job_executions(job_id, started_at DESC)
 idx_logs_job_time         ON job_logs(job_id, created_at DESC)
 idx_outbox_claim          ON outbox_events(priority DESC, created_at) WHERE published_at IS NULL
 idx_scheduled_active_next ON scheduled_jobs(next_fire_at) WHERE is_active
+idx_jobs_queue_shard_status ON jobs(queue_id, shard_id, status)
+idx_jobs_waiting            ON jobs(queue_id) WHERE status = 'WAITING'
+idx_jobs_queue_created_at   ON jobs(queue_id, created_at DESC)
+idx_outbox_job              ON outbox_events(job_id)
+idx_audit_actor_time        ON audit_log(actor_id, created_at DESC)
 ```
+
+## Lifecycle and cold storage
+
+Job status vocabulary: `SCHEDULED → QUEUED → CLAIMED → RUNNING → COMPLETED`,
+with `RETRY_WAIT` (bounded backoff), `WAITING` (workflow DAG gate),
+`UNKNOWN_EXTERNAL_RESULT` (reconciler resolves after a grace period via the
+`UNKNOWN_RESOLUTION_POLICY`), and terminal `FAILED` / `CANCELLED`. The state
+machine is enforced in code (`validate_transition`) and mirrored by DB CHECK
+constraints on `scheduled_jobs.job_type` / `workflows.status` (`NOT VALID`, so
+legacy rows stay readable).
+
+Cold path: terminal jobs older than `ARCHIVE_AFTER_DAYS` move — together with
+their executions, logs, and *replayed* DLQ rows — into the four `*_archive`
+twins (un-replayed DLQ entries are operational state and block archival).
+Measured throughput: **~4,500 rows/s** with 500-row batches
+(`db/tests/archive_bench.rs`). Heartbeats and job logs have independent
+retention pruners; the scheduler runs all housekeeping each tick.
 
 The partial indexes keep queue-claim, retry, scheduler, and outbox scans small;
 `SKIP LOCKED` and short transactions prevent competing workers from blocking

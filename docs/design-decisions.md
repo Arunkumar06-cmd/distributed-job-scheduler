@@ -45,7 +45,7 @@
 
 ## State Machine Simplicity
 
-Defined `Scheduled, Queued, Claimed, Running, RetryWait, Completed, Failed, Cancelled`. `Claimed` exists to make `QUEUED->CLAIMED->RUNNING` two-phase (claim in TX, then long task). Without `Claimed`, `RUNNING` would hold TX open.
+Defined `Scheduled, Queued, Claimed, Running, RetryWait, Completed, Failed, Cancelled`, later extended with `WAITING` (workflow DAG gate) and `UNKNOWN_EXTERNAL_RESULT` (crash window between dispatching external work and observing its outcome). `UNKNOWN` is never a dead end: the reconciler resolves it after a grace period via `UNKNOWN_RESOLUTION_POLICY` — `dlq` by default because guessing an external outcome is unsafe; `retry` requires the idempotency contract. `Claimed` exists to make `QUEUED->CLAIMED->RUNNING` two-phase (claim in TX, then long task). Without `Claimed`, `RUNNING` would hold TX open.
 
 ## Batch & DLQ Retention
 
@@ -69,6 +69,91 @@ rather than exposing the process-wide event broadcast channel.
 - **AI failure summaries**: An opt-in, non-critical OpenAI Responses worker
   writes structured DLQ summaries only when `AI_SUMMARIES_ENABLED` and
   `OPENAI_API_KEY` are configured.
+
+## API Versioning & Verb Policy
+
+**Chosen: dual-mounted `/api/v1/*` + frozen unversioned aliases.**
+New consumers get a stable contract; existing clients keep working with zero
+migration cost. The OpenAPI document declares `/api/v1` as canonical.
+
+**Verb convention**: `PATCH` mutates stored state; POST verb-subresources are
+actions only. Queue pause/resume is *stored state* (`is_paused`), so it moved
+to `PATCH /queues/:id`; the old `POST .../pause|resume` remain as documented
+compatibility aliases emitting RFC-8594 `Deprecation`/`Sunset`/`Link` headers.
+
+Trade-off: two paths for one operation during the deprecation window. Accepted
+because hard-breaking the dashboard or third-party scripts buys nothing for an
+internship-scale system.
+
+## Token Model: Short Access + Rotating Refresh vs Long-Lived JWT
+
+**Chosen: 1h access tokens rotated by 30-day refresh tokens.**
+A stolen long-lived bearer was previously valid for 7 days with no revocation
+path short of changing the JWT secret. Typed claims (`typ: access|refresh`)
+make cross-use impossible at validation time; rotation gives a bounded blast
+radius without per-request DB session checks.
+Trade-off: refresh adds an endpoint and client wrapper. Reuse detection (one
+refresh-token table) and Redis-backed limiters are named future work.
+
+## Rate Limiting: In-Process Fixed Window vs Redis
+
+**Chosen: in-process per-user fixed window** checked inside the auth
+middleware after identity resolution. Zero new infrastructure, correct per
+instance. Trade-off: N API replicas multiply the effective limit; acceptable
+because the limiter's job is runaway-client containment, not billing-grade
+metering. A Redis counter is the next tier up.
+
+## Audit Trail: Best-Effort Writes vs Synchronous Blocking
+
+**Chosen: best-effort `append_audit`.** Privileged mutations record actor,
+org, action, target, details; failures log loudly but never fail the user's
+operation. Rationale: audit completeness matters, but availability of the
+scheduling control-plane matters more, and every audited action already has
+authoritative state elsewhere (queue rows, memberships).
+
+## Hot/Cold Separation: Archive Twins vs Declarative Partitioning
+
+**Chosen: archive twin tables + batched moves.** Declarative partitioning of
+`jobs` by time would force the partition key into the PK, break the global
+idempotency unique constraint, and touch every query — high blast radius.
+Instead, terminal jobs older than `ARCHIVE_AFTER_DAYS` move with their full
+dependency family (executions, logs, replayed DLQ entries) into `*_archive`
+twins via a bounded-batch function. Un-replayed DLQ rows block archival (they
+are operational state). Measured ~4,500 rows/s on a laptop Postgres.
+Trade-off: archived jobs leave the hot table (job lookups by id miss them);
+acceptable because archival only touches completed history.
+
+## Metrics: Scrape-Time Aggregation vs Client Instrumentation
+
+**Chosen: compute histograms from `job_executions` at scrape time** (trailing
+24h, standard cumulative buckets + sum/count). No worker-side metrics server,
+no cardinality explosion from per-queue labels, and durations live in the DB
+ledger anyway. Trade-off: heavier scrapes as volume grows and no sub-24h
+window control — the point where a push-gateway or OTel collector earns its keep.
+
+## Testing Isolation: Per-Test Databases vs Truncate/Rollback
+
+**Chosen: throwaway `js_test_<uuid>` database per test, all migrations applied
+twice.** Double application proves idempotency continuously (a drifted schema
+converges); isolation removes truncate races entirely, so the suite runs fully
+parallel. Trade-off: ~200ms setup per test — negligible next to correctness.
+
+## Frontend Live Updates: SSE Change-Trigger + Slow Poll vs Poll-Only
+
+**Chosen: project-scoped SSE stream drives instant refreshes; polling remains
+as fallback.** EventSource cannot send Authorization headers, so the events
+routes additionally accept `?access_token=` — safe specifically because access
+tokens now expire hourly. Snapshots are change-detected client-side and debounced;
+blind fast polling was removed rather than doubled up.
+
+## Handler Safety: Panic Guard + Timeout at the Consumer Boundary
+
+**Chosen: every handler runs under `catch_unwind` and a hard timeout**
+(`HANDLER_TIMEOUT_SECS`). A panic converts to retryable `handler_panicked`
+instead of killing the consumer task serving the subject; a hang becomes
+`handler_timeout` instead of pinning it forever. Safe under the idempotency
+contract. Additionally, handlers dispatch onto a semaphore-bounded pool
+(`WORKER_CONCURRENCY`) — one slow job can no longer starve its queue.
 
 ## Deferred Extensions
 

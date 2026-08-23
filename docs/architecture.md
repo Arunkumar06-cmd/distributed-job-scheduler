@@ -36,11 +36,16 @@
 ## Component Responsibilities
 
 ### API (Axum)
-- Auth (argon2 + JWT HS256, 7d expiry, org/project membership checks)
+- Auth (argon2id; 1h access tokens rotated by 30-day refresh tokens via `/auth/refresh`; typed claims so a refresh token can never authenticate a request; org/project membership checks)
+- Per-user fixed-window rate limiting (`API_RATE_LIMIT_PER_MIN`, 0 disables)
+- Audit trail for privileged mutations (`audit_log`: queue config/pause/resume, DLQ replay, membership changes)
+- Versioned contract at `/api/v1/*` with frozen unversioned legacy aliases
 - Validation, pagination, filtering, structured errors `{error:{code,message}, request_id}`
 - Transactional job creation + outbox
-- Queue pause/resume, stats via aggregated counts
-- Scoped dashboard polling for live operational views
+- Queue reconfiguration incl. `PATCH {is_paused}` (pause/resume POST verbs emit Deprecation/Sunset headers)
+- Stats via aggregated counts; dashboard uses SSE snapshots as change-trigger plus slow-poll fallback
+- Prometheus text exposition at `/metrics` (status gauges, DLQ depth, outbox pending, worker liveness, execution-duration histogram over trailing 24h) and JSON summary at `/stats`
+- Spawns outbox relay + scheduler as background tasks (also runnable standalone)
 - Spawns outbox relay + scheduler as background tasks (also runnable standalone)
 
 ### Outbox Relay
@@ -52,15 +57,16 @@ BEGIN -> SELECT ... FOR UPDATE SKIP LOCKED LIMIT 100 ORDER BY priority DESC, cre
         -- network --
 BEGIN -> DELETE WHERE relay_owner = $self COMMIT
 ```
-Lease 30s, poll 250ms, batch 100. Never holds TX during network.
+Lease `OUTBOX_LEASE_SECS`, poll `OUTBOX_POLL_INTERVAL_MS`, batch `OUTBOX_BATCH_SIZE`. Never holds TX during network. Failed events get `publish_attempts++` and exponential backoff (30s doubling, capped 10 min) instead of a fixed retry drumbeat — poison pills stop hammering the broker while staying eligible for redelivery.
 
 ### Worker
 ```
 NATS batch (max 1, expires 5s) -> process_message
   -> claim_job (queue lock NOWAIT, capacity check, QUEUED->CLAIMED, execution STARTED)
   -> CLAIMED->RUNNING (outside claim TX, sets started_at)
-  -> spawn lease_renewer (every 5s, UPDATE lease_expires_at WHERE epoch)
-  -> handler.handle (echo/sleep/always_fail, idempotent)
+  -> spawn lease_renewer (every heartbeat, UPDATE lease_expires_at WHERE epoch; 3 consecutive renewal failures fence the worker)
+  -> dispatch to bounded pool (WORKER_CONCURRENCY semaphore; fetch backpressures when full)
+  -> handler under panic-guard + HANDLER_TIMEOUT_SECS timeout (panic/hang => retryable failure, never kills the consumer)
   -> complete (fenced) or fail (RETRY_WAIT + next_retry or FAILED + DLQ)
   -> ACK (or Nak with delay for pause/capacity)
 ```
@@ -70,7 +76,7 @@ NATS batch (max 1, expires 5s) -> process_message
 
 ### Scheduler
 ```
-loop every 5s:
+loop every SCHEDULER_POLL_INTERVAL_SECS (woken instantly by LISTEN queue_events NOTIFY):
   try pg_try_advisory_lock(0x73636865) -> if not leader sleep
   tick:
     promote SCHEDULED->QUEUED where scheduled_for <= NOW() + outbox
@@ -78,6 +84,8 @@ loop every 5s:
     for each due scheduled_jobs (next_fire_at <= NOW()):
         create_cron_occurrence (INSERT scheduled_occurrences ON CONFLICT DO NOTHING -> if 0 rows dedup)
         compute next occurrence via cron+tz, update next_fire_at
+    reconcile UNKNOWN_EXTERNAL_RESULT older than UNKNOWN_GRACE_SECS per UNKNOWN_RESOLUTION_POLICY (dlq|retry|complete)
+    housekeeping: prune job_logs + worker_heartbeats, archive terminal jobs to *_archive twins (ARCHIVE_AFTER_DAYS)
 ```
 Leader lock is session-scoped, auto-released on disconnect. Dedup PK ensures exactly-once even if two schedulers race.
 
@@ -90,9 +98,12 @@ tier = high (priority>=10) | standard (>0) | low (0)
 
 Stream per queue: `JOBS_{org}_{proj}_{queue}` (dashes -> underscores). A
 single-shard queue uses `org.{org}.proj.{project}.queue.{queue}.{tier}`;
-sharded queues use `...queue.{queue}.shard.{shard_id}.{tier}`. Workers create a
-durable pull consumer per shard, with `Explicit` ack, `AckWait = lease*2`, and
-`max_deliver 10`.
+sharded queues use `...queue.{queue}.shard.{shard_id}.{tier}`. Workers attach a **shared** durable pull consumer named by the hash of
+stream+subject — stable across restarts and identical between replicas, so
+workers are competing consumers and no durable is ever orphaned by a reboot.
+Configured with `Explicit` ack, `AckWait = lease*2`, `max_deliver 10`; creation
+retries until the lazily-provisioned stream exists. New queues reach workers
+instantly via a `queue_created` NOTIFY trigger (10s sweep as fallback).
 
 Duplicate window: `Nats-Msg-Id` = `outbox.id` (stable across retries).
 
@@ -105,6 +116,10 @@ Duplicate window: `Nats-Msg-Id` = `outbox.id` (stable across retries).
 | API crash during BEGIN | ROLLBACK -> no job/outbox | Client retries with same Idempotency-Key |
 | DB outage | Worker fails to commit -> does not ACK -> redelivery | - |
 | Queue paused | Worker sees `is_paused` -> Nak with delay 5s | Resumes when unpaused |
+| Handler panics or hangs | catch_unwind + HANDLER_TIMEOUT_SECS | Retryable failure (`handler_panicked`/`handler_timeout`); idempotency contract makes retry safe |
+| Worker cannot renew lease 3x in a row | renew_lease returns false | Worker fences itself; result commit refused, job redriven after expiry |
+| Scheduler leader crash | Session-scoped advisory lock auto-released | Another replica takes leadership on next tick |
+| UNKNOWN external outcome | Reconciler after grace period | Policy-driven: DLQ (default) / redrive / complete |
 
 ## Data Flow Example
 

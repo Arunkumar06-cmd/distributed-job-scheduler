@@ -31,21 +31,34 @@ pub fn spawn(pool: PgPool, config: Arc<Config>, shutdown: tokio_util::sync::Canc
         return;
     };
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            // No timeout means one hung upstream call stalls the whole loop.
+            .timeout(std::time::Duration::from_secs(30))
+            .build();
+        let Ok(client) = client else {
+            tracing::error!("AI summaries: could not build HTTP client");
+            return;
+        };
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         loop {
             interval.tick().await;
             if shutdown.is_cancelled() {
                 break;
             }
-            let pending: Vec<PendingSummary> = sqlx::query_as(
+            let pending: Vec<PendingSummary> = match sqlx::query_as(
                 r#"SELECT dlq.id, dlq.job_id, dlq.final_error, dlq.error_kind, dlq.attempt
                    FROM dead_letter_entries dlq LEFT JOIN failure_summaries fs ON fs.dlq_id = dlq.id
                    WHERE fs.id IS NULL ORDER BY dlq.moved_at ASC LIMIT 5"#,
             )
             .fetch_all(&pool)
             .await
-            .unwrap_or_default();
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    warn!(%error, "AI summaries: failed to query pending entries");
+                    continue;
+                }
+            };
             for pending in pending {
                 let dlq_id = pending.id;
                 let job_id = pending.job_id;
@@ -84,7 +97,21 @@ async fn summarize(
     error_kind: Option<String>,
     attempt: i32,
 ) -> anyhow::Result<SummaryOutput> {
-    let prompt = format!("Summarize this failed background job for an operator. Do not invent facts. Return JSON only with summary, root_cause, remediation. Error kind: {}. Final error: {}. Attempts: {}.", error_kind.as_deref().unwrap_or("unknown"), final_error.as_deref().unwrap_or("no error message recorded"), attempt);
+    // Truncate operator-supplied error text: unbounded payloads bloat the
+    // request and can smuggle instructions into the prompt.
+    let truncate = |s: &str| -> String {
+        if s.len() > 2000 {
+            format!("{}…[truncated]", &s[..2000])
+        } else {
+            s.to_string()
+        }
+    };
+    let prompt = format!(
+        "Summarize this failed background job for an operator. Do not invent facts. Return JSON only with summary, root_cause, remediation. Error kind: {}. Final error: {}. Attempts: {}.",
+        error_kind.as_deref().map_or_else(|| "unknown".to_string(), &truncate),
+        final_error.as_deref().map_or_else(|| "no error message recorded".to_string(), &truncate),
+        attempt
+    );
     let response: serde_json::Value = client.post("https://api.openai.com/v1/responses").bearer_auth(api_key)
         .json(&serde_json::json!({"model": model, "input": prompt, "max_output_tokens": 300, "store": false, "text": {"format": {"type": "json_object"}}}))
         .send().await?.error_for_status()?.json().await?;

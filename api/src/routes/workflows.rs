@@ -4,10 +4,12 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
+use crate::routes::validate::validate_payload;
 use crate::state::AppState;
 use common::{ids, AppError, AppResult};
 use db::queries;
@@ -17,6 +19,7 @@ pub struct CreateWorkflowReq {
     pub project_id: Uuid,
     #[validate(length(min = 1, max = 100))]
     pub name: String,
+    #[validate(nested)]
     pub jobs: Vec<WorkflowJob>,
     pub edges: Vec<WorkflowEdge>,
 }
@@ -68,6 +71,11 @@ pub async fn create(
             return Err(AppError::Validation("self loop".to_string()));
         }
     }
+    validate_workflow_acyclic(req.jobs.len(), &req.edges)?;
+    for (idx, wj) in req.jobs.iter().enumerate() {
+        validate_payload(&wj.payload)
+            .map_err(|e| AppError::Validation(format!("job {idx}: {e}")))?;
+    }
     // Create workflow + jobs + edges in a single transaction
     let mut tx = state.pool.begin().await?;
     let wf_id: Uuid =
@@ -91,18 +99,24 @@ pub async fn create(
         let is_child = req.edges.iter().any(|e| e.child == idx);
         let status = if is_child { "WAITING" } else { "QUEUED" };
         let priority = wj.priority.unwrap_or(queue.default_priority);
+        // Pre-generate the id so shard routing uses the same stable key the
+        // job row will carry; hardcoding shard 0 silently strands workflow
+        // roots on sharded queues.
+        let job_id = ids::new_id();
+        let shard_id = ids::shard_for_key(&job_id.to_string(), queue.shard_count);
         let payload = wj.payload.clone();
-        let job_id: Uuid = sqlx::query_scalar(
-            r#"INSERT INTO jobs (queue_id, workflow_id, type, status, payload, priority, max_attempts, queued_at)
-               VALUES ($1, $2, 'immediate', $3::job_status, $4, $5, 3, CASE WHEN $3='QUEUED' THEN NOW() ELSE NULL END)
-               RETURNING id"#,
+        sqlx::query(
+            r#"INSERT INTO jobs (id, queue_id, workflow_id, shard_id, type, status, payload, priority, max_attempts, queued_at)
+               VALUES ($1, $2, $3, $6, 'immediate', $4::job_status, $5, $7, 3, CASE WHEN $4='QUEUED' THEN NOW() ELSE NULL END)"#,
         )
+        .bind(job_id)
         .bind(wj.queue_id)
         .bind(wf_id)
         .bind(status)
         .bind(&payload)
+        .bind(shard_id)
         .bind(priority)
-        .fetch_one(&mut *tx)
+        .execute(&mut *tx)
         .await?;
         if !is_child {
             let subject = ids::nats_subject_for_shard(
@@ -110,7 +124,7 @@ pub async fn create(
                 &proj.id,
                 &wj.queue_id,
                 queue.shard_count,
-                0,
+                shard_id,
                 priority,
             );
             let eid = Uuid::new_v4();
@@ -145,6 +159,7 @@ pub async fn create(
         edge_vals.push(serde_json::json!({"parent": parent_id, "child": child_id}));
     }
     tx.commit().await?;
+    let _ = state.broadcast.send(format!("workflow.created:{}", wf_id));
     Ok((
         StatusCode::CREATED,
         Json(WorkflowResp {
@@ -153,6 +168,55 @@ pub async fn create(
             edges: edge_vals,
         }),
     ))
+}
+
+/// Kahn's algorithm. The DB trigger also rejects cycles, but surfacing that as
+/// a 500 makes the API unusable for clients; validate before writing.
+fn validate_workflow_acyclic(node_count: usize, edges: &[WorkflowEdge]) -> AppResult<()> {
+    let mut indegree = vec![0usize; node_count];
+    let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+    for e in edges {
+        adj.entry(e.parent).or_default().push(e.child);
+        indegree[e.child] += 1;
+    }
+    let mut queue: std::collections::VecDeque<usize> =
+        (0..node_count).filter(|&n| indegree[n] == 0).collect();
+    let mut visited = 0usize;
+    while let Some(n) = queue.pop_front() {
+        visited += 1;
+        if let Some(children) = adj.get(&n) {
+            for &c in children {
+                indegree[c] -= 1;
+                if indegree[c] == 0 {
+                    queue.push_back(c);
+                }
+            }
+        }
+    }
+    if visited != node_count {
+        return Err(AppError::Validation(
+            "workflow edges contain a cycle".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The workflows.status column is a frozen write-time value; derive the live
+/// status from member jobs so the dashboard reflects reality.
+fn derive_workflow_status(jobs: &[db::models::Job]) -> &'static str {
+    use domain::JobStatus;
+    if jobs.is_empty() {
+        return "RUNNING";
+    }
+    let terminal = |s: JobStatus| s.is_terminal();
+    if jobs.iter().all(|j| j.status == JobStatus::Completed) {
+        "COMPLETED"
+    } else if jobs.iter().all(|j| terminal(j.status)) {
+        // Every job reached a terminal state but not all completed.
+        "FAILED"
+    } else {
+        "RUNNING"
+    }
 }
 
 pub async fn get(
@@ -183,8 +247,10 @@ pub async fn get(
         .bind(wf_id)
         .fetch_all(&state.pool)
         .await?;
+    let live_status = derive_workflow_status(&jobs);
     Ok(Json(serde_json::json!({
-        "id": id, "project_id": proj_id, "name": name, "status": status, "created_at": created_at,
+        "id": id, "project_id": proj_id, "name": name,
+        "status": live_status, "stored_status": status, "created_at": created_at,
         "jobs": jobs,
         "edges": edges.iter().map(|(p,c)| serde_json::json!({"parent": p, "child": c})).collect::<Vec<_>>()
     })))

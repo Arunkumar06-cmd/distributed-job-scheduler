@@ -21,6 +21,12 @@ pub async fn lease_renewer(
     let mut ticker = interval(Duration::from_secs(config.heartbeat_interval_secs));
     ticker.tick().await; // skip first immediate tick
 
+    // Transient DB blips must not orphan in-flight work, but a worker that
+    // cannot renew for several consecutive beats is effectively partitioned:
+    // its lease will expire and another worker may take the job. Fencing out
+    // (returning false) stops it from committing results blind.
+    let mut consecutive_errors: u32 = 0;
+
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -36,6 +42,7 @@ pub async fn lease_renewer(
                     config.lease_duration_secs as i64,
                 ).await {
                     Ok(true) => {
+                        consecutive_errors = 0;
                         debug!(job_id = %job_id, epoch, "lease renewed");
                     }
                     Ok(false) => {
@@ -43,8 +50,12 @@ pub async fn lease_renewer(
                         return false;
                     }
                     Err(e) => {
-                        error!(job_id = %job_id, error = %e, "lease renewal error");
-                        // Don't immediately give up on transient DB errors
+                        consecutive_errors += 1;
+                        error!(job_id = %job_id, error = %e, attempt = consecutive_errors, "lease renewal error");
+                        if consecutive_errors >= 3 {
+                            error!(job_id = %job_id, "lease renewal failed 3x consecutively; treating as lost");
+                            return false;
+                        }
                     }
                 }
             }

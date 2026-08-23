@@ -18,10 +18,12 @@ pub struct WorkerConsumer {
     pool: sqlx::PgPool,
     js: jetstream::Context,
     worker_id: Uuid,
-    worker_name: String,
     config: Arc<Config>,
     registry: Arc<HandlerRegistry>,
     shutdown: tokio_util::sync::CancellationToken,
+    /// Bounds in-flight handler executions to the configured worker
+    /// concurrency; fetching backpressures when all slots are busy.
+    permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl WorkerConsumer {
@@ -29,64 +31,98 @@ impl WorkerConsumer {
         pool: sqlx::PgPool,
         js: jetstream::Context,
         worker_id: Uuid,
-        worker_name: String,
         config: Arc<Config>,
         registry: Arc<HandlerRegistry>,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> Self {
+        let permits = Arc::new(tokio::sync::Semaphore::new(config.worker_concurrency));
         Self {
             pool,
             js,
             worker_id,
-            worker_name,
             config,
             registry,
             shutdown,
+            permits,
         }
     }
 
     /// Consume from a single queue's stream subject.
-    pub async fn consume_subject(self, subject: String, stream_name: String) {
-        // Each queue shard needs an independent durable on the same stream.
-        // Encode the filter subject to avoid consumer-name collisions.
-        let consumer_name = format!(
-            "{}-{}-{}",
-            self.worker_name,
-            stream_name,
-            subject
-                .replace('.', "_")
-                .replace('*', "all")
-                .replace('>', "tail")
-        );
-        let consumer = match self
-            .js
-            .create_consumer_on_stream(
-                jetstream::consumer::pull::Config {
-                    name: Some(consumer_name.clone()),
-                    durable_name: Some(consumer_name.clone()),
-                    filter_subject: subject.clone(),
-                    ack_policy: jetstream::consumer::AckPolicy::Explicit,
-                    ack_wait: Duration::from_secs(self.config.lease_duration_secs * 2),
-                    max_deliver: 10,
-                    ..Default::default()
-                },
-                &stream_name,
-            )
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                error!(subject = %subject, error = %e, "failed to create consumer");
+    ///
+    /// Messages are dispatched to a bounded worker pool (`WORKER_CONCURRENCY`
+    /// permits) instead of being processed serially: one slow job can no
+    /// longer starve every other job on the subject.
+    pub async fn consume_subject(self: Arc<Self>, subject: String, stream_name: String) {
+        // One SHARED durable per stream+subject, stable across worker restarts
+        // and identical across workers: competing consumers then distribute
+        // work instead of each boot abandoning last boot's durable (with its
+        // unacked deliveries) and leaking a new one. Hashing keeps the name
+        // far below NATS's 255-char limit for UUID-laden subjects.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        stream_name.hash(&mut hasher);
+        subject.hash(&mut hasher);
+        let consumer_name = format!("jobs-{:016x}", hasher.finish());
+        // Streams are provisioned lazily (API creates them on queue/job
+        // creation), so the stream may not exist yet. Retry instead of dying:
+        // a one-shot failure here silently starves the queue forever.
+        let consumer = loop {
+            if self.shutdown.is_cancelled() {
+                info!(subject = %subject, "consumer shutting down before start");
                 return;
+            }
+            match self
+                .js
+                .create_consumer_on_stream(
+                    jetstream::consumer::pull::Config {
+                        name: Some(consumer_name.clone()),
+                        durable_name: Some(consumer_name.clone()),
+                        filter_subject: subject.clone(),
+                        ack_policy: jetstream::consumer::AckPolicy::Explicit,
+                        ack_wait: Duration::from_secs(self.config.lease_duration_secs * 2),
+                        max_deliver: 10,
+                        ..Default::default()
+                    },
+                    &stream_name,
+                )
+                .await
+            {
+                Ok(c) => break c,
+                Err(e) => {
+                    error!(subject = %subject, stream = %stream_name, error = %e, "consumer create failed; retrying in 5s");
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                        _ = self.shutdown.cancelled() => {
+                            info!(subject = %subject, "consumer shutting down during retry");
+                            return;
+                        }
+                    }
+                }
             }
         };
 
-        info!(subject = %subject, consumer = %consumer_name, "consumer started");
+        info!(
+            subject = %subject,
+            consumer = %consumer_name,
+            concurrency = self.config.worker_concurrency,
+            "consumer started"
+        );
+
+        let mut inflight = tokio::task::JoinSet::new();
 
         loop {
             if self.shutdown.is_cancelled() {
-                info!(subject = %subject, "consumer shutting down");
+                info!(subject = %subject, "consumer shutting down; draining in-flight jobs");
                 break;
+            }
+
+            // Reap finished tasks so the set does not grow unbounded.
+            while let Some(done) = inflight.try_join_next() {
+                if let Err(e) = done {
+                    // A panic inside process_message itself (outside the
+                    // handler guard) must not kill the consumer.
+                    error!(subject = %subject, panic = %e, "dispatch task panicked");
+                }
             }
 
             let batch = match consumer
@@ -99,7 +135,10 @@ impl WorkerConsumer {
                 Ok(b) => b,
                 Err(e) => {
                     error!(subject = %subject, error = %e, "consumer batch error");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        _ = self.shutdown.cancelled() => break,
+                    }
                     continue;
                 }
             };
@@ -112,7 +151,21 @@ impl WorkerConsumer {
                     let _ = msg.ack_with(AckKind::Nak(None)).await;
                     break;
                 }
-                self.process_message(msg).await;
+                // Backpressure: waits for a free concurrency slot before
+                // pulling more work from JetStream.
+                let permit = self.permits.clone().acquire_owned().await;
+                let me = Arc::clone(&self);
+                inflight.spawn(async move {
+                    let _permit = permit;
+                    me.process_message(msg).await;
+                });
+            }
+        }
+
+        // Graceful drain: wait for every dispatched job to finish committing.
+        while let Some(done) = inflight.join_next().await {
+            if let Err(e) = done {
+                error!(subject = %subject, panic = %e, "dispatch task panicked during drain");
             }
         }
         info!(subject = %subject, "consumer stopped");
@@ -196,12 +249,19 @@ impl WorkerConsumer {
             }
         };
 
-        // Transition CLAIMED -> RUNNING
+        // Transition CLAIMED -> RUNNING. None means we lost the job between
+        // claim and transition (lease expired and the reaper requeued it);
+        // the fresh outbox event will deliver it again, so ACK this delivery.
         let job = match self
             .transition_to_running(claimed.job.id, claimed.lease_epoch)
             .await
         {
-            Ok(j) => j,
+            Ok(Some(j)) => j,
+            Ok(None) => {
+                warn!(job_id = %claimed.job.id, "claim lost before RUNNING (raced reaper); acking redelivery");
+                let _ = msg.ack().await;
+                return;
+            }
             Err(e) => {
                 error!(job_id = %job_id, error = %e, "failed to transition to RUNNING; NAK");
                 let _ = msg.ack_with(AckKind::Nak(None)).await;
@@ -238,8 +298,12 @@ impl WorkerConsumer {
             }
         });
 
-        // Execute the handler
-        let result = self.execute_handler(&job).await;
+        // Execute the handler guarded against panics and hangs.
+        let result =
+            crate::handler::run_protected(self.config.handler_timeout_secs, async {
+                self.execute_handler(&job, claimed.execution_id).await
+            })
+            .await;
 
         // Stop lease renewal + InProgress
         lease_cancel.cancel();
@@ -316,7 +380,11 @@ impl WorkerConsumer {
         }
     }
 
-    async fn transition_to_running(&self, job_id: Uuid, epoch: i64) -> anyhow::Result<Job> {
+    async fn transition_to_running(
+        &self,
+        job_id: Uuid,
+        epoch: i64,
+    ) -> anyhow::Result<Option<Job>> {
         let job = sqlx::query_as::<_, Job>(
             r#"UPDATE jobs SET
                  status = 'RUNNING'::job_status,
@@ -330,17 +398,21 @@ impl WorkerConsumer {
         .bind(job_id)
         .bind(epoch)
         .bind(self.worker_id)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
         Ok(job)
     }
 
-    async fn execute_handler(&self, job: &Job) -> HandlerResult {
-        let job_type = job
-            .payload
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("echo");
+    async fn execute_handler(&self, job: &Job, execution_id: Uuid) -> HandlerResult {
+        // An absent type must NOT silently fall back to the echo handler:
+        // that would mark arbitrary jobs "successfully completed" without
+        // doing their work. Explicit registration or explicit DLQ.
+        let Some(job_type) = job.payload.get("type").and_then(|v| v.as_str()) else {
+            return HandlerResult::Permanent {
+                message: "payload has no 'type' field; no handler can be selected".to_string(),
+                kind: "no_handler".to_string(),
+            };
+        };
 
         let handler = match self.registry.get(job_type).await {
             Some(h) => h,
@@ -355,7 +427,7 @@ impl WorkerConsumer {
         let _ = queries::append_log(
             &self.pool,
             job.id,
-            None,
+            Some(execution_id),
             Some(self.worker_id),
             "INFO",
             &format!("executing handler '{job_type}' attempt {}", job.attempt),
@@ -455,14 +527,26 @@ impl WorkerConsumer {
                 return;
             }
         };
-        let _ = sqlx::query(
-            "UPDATE jobs SET max_attempts = attempt WHERE id = $1 AND lease_epoch = $2",
+        // Clamp max_attempts to the current attempt so the subsequent fail_job
+        // routes straight to the DLQ. If the clamp fails we still proceed —
+        // fail_job's own fencing decides the outcome, but log loudly.
+        match sqlx::query(
+            "UPDATE jobs SET max_attempts = GREATEST(attempt, 1)
+             WHERE id = $1 AND lease_epoch = $2 AND status = 'RUNNING'::job_status",
         )
         .bind(job.id)
         .bind(epoch)
         .execute(&mut *tx)
-        .await;
-        let _ = tx.commit().await;
+        .await
+        {
+            Ok(r) if r.rows_affected() == 1 => {}
+            _ => {
+                error!(job_id = %job.id, "permanent-failure clamp missed; failing via normal path");
+            }
+        }
+        if let Err(e) = tx.commit().await {
+            error!(error = %e, "permanent-failure clamp commit failed");
+        }
 
         self.handle_failure(job, execution_id, epoch, message, kind, msg)
             .await;

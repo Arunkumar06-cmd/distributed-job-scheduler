@@ -30,11 +30,12 @@ pub async fn create(
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
     queries::require_org_admin(&state.pool, auth.user_id, req.org_id).await?;
+    let slug = common::ids::normalize_slug(&req.slug);
     let proj = queries::create_project(
         &state.pool,
         req.org_id,
         &req.name,
-        &req.slug,
+        &slug,
         req.description.as_deref().unwrap_or(""),
         auth.user_id,
     )
@@ -59,14 +60,11 @@ pub async fn list(
         let projects = queries::list_projects_in_org(&state.pool, org_id).await?;
         Ok(Json(serde_json::json!(projects)))
     } else {
-        // list all orgs for user then projects
+        // Single round trip for every org the user belongs to.
         let orgs = queries::list_organizations_for_user(&state.pool, auth.user_id).await?;
-        let mut all = Vec::new();
-        for org in orgs {
-            let mut ps = queries::list_projects_in_org(&state.pool, org.id).await?;
-            all.append(&mut ps);
-        }
-        Ok(Json(serde_json::json!(all)))
+        let org_ids: Vec<Uuid> = orgs.iter().map(|o| o.id).collect();
+        let projects = queries::list_projects_in_orgs(&state.pool, &org_ids).await?;
+        Ok(Json(serde_json::json!(projects)))
     }
 }
 

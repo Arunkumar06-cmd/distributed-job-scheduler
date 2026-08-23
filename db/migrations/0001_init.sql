@@ -4,7 +4,10 @@
 --       job_executions, job_logs, scheduled_jobs, scheduled_occurrences,
 --       outbox_events, dead_letter_entries, batches, audit_log
 
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- Guarded: parallel migration runners can race even IF NOT EXISTS.
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+EXCEPTION WHEN duplicate_object THEN NULL; WHEN unique_violation THEN NULL; END $$;
 
 -- =========================================================
 -- ENUMS

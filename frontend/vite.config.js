@@ -8,7 +8,6 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
       },
       '/auth': 'http://localhost:8080',
       '/organizations': 'http://localhost:8080',
@@ -22,8 +21,7 @@ export default defineConfig({
       '/workflows': 'http://localhost:8080',
       '/health': 'http://localhost:8080',
       '/metrics': 'http://localhost:8080',
-      '/events': 'http://localhost:8080',
-      '/ws': { target: 'ws://localhost:8080', ws: true },
+      '/events': { target: 'http://localhost:8080', ws: true },
     }
   }
 })

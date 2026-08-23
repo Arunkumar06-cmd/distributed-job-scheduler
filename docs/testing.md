@@ -1,98 +1,73 @@
 # Testing Strategy
 
-## Unit (domain)
+The suite is layered so that cheap tests run on every save and the most
+expensive proofs run in dedicated CI jobs. Every layer is automated; nothing
+in this document is a manual step.
+
+## Layers
+
+| Layer | Location | Count | What it proves | Runtime |
+|---|---|---|---|---|
+| Domain unit | `domain/src` | 28 | Retry math (overflow-safe), lifecycle state-machine matrix (terminal states are absorbing), cron semantics incl. timezone + catch-up, slug/tier/shard helpers | < 1 s |
+| Shared unit | `common/src`, `api/src/auth.rs`, `worker/src/handler.rs` | 26 | Token kind-separation (refresh ≠ access), tamper/expiry rejection, argon2 round-trip, rate-limiter windows, panic/timeout handler guards, error redaction (internal causes never reach clients) | < 2 s |
+| DB integration | `db/src/integration_tests.rs` | 12 | **Real Postgres.** Atomic claim fencing, idempotency conflicts, capacity-token limits under contention, parallel-claim single-winner, cron occurrence dedup, DLQ replay inheritance + double-replay rejection, retry-policy resolution layering, UNKNOWN reconciliation policies, heartbeat pruning, audit writes, subject-tier correctness | ~ 5–9 s |
+| Worker race harness | `worker/tests/race_harness.rs` | 1 | **3 consumer replicas race 40 jobs through one shared durable.** Asserts zero double-execution (one ledger row per job), distribution across replicas, and no leaked capacity tokens | ~ 32 s |
+| Archive throughput bench | `db/tests/archive_bench.rs` | 1 | Seeds 5,000 terminal jobs, drains via `archive_terminal_jobs` in 500-row batches. Measured: **~4,400–4,500 rows/s** on laptop Postgres | ~ 2 s |
+| Worker pipeline e2e | `worker/tests/pipeline_e2e.rs` | 1 | **Full stack:** outbox row → JetStream publish → durable pull consumer → claim → handler → COMPLETED with result + execution ledger; failure path lands in DLQ; heartbeat counters move | ~ 5 s |
+| Frontend unit/component | `frontend/src/**/*.test.*` | 6 | Refresh-token rotation semantics (retry-once with new access token, session-expired dispatch), format helpers, ErrorBoundary fallback | ~ 4 s |
+| Browser e2e | `frontend/tests/e2e/dashboard.spec.js` | 8 | Real browser against real API: register → onboarding wizard → create org/project/queue via modals → submit job (listed + pagination) → payload validation → pause/resume badge → DLQ empty state → sign-out. Includes **axe accessibility scans** asserting zero critical/serious violations (contrast included) | ~ 25 s |
+| Visual regression | `frontend/tests/e2e/visual.spec.js` | 4 | Pixel baselines for auth / welcome / workspace / DLQ surfaces. Deterministic via fixed viewport, reduced-motion gating of animations, masked dynamic regions (refresh timestamp), fresh empty workspace per shot | ~ 10 s |
+| Load benchmark | `bench/k6.js` | — | Sustained job-submission throughput profile (`k6 run bench/k6.js`) | manual |
+
+CI totals: **66 Rust lib tests + 3 service-backed proofs (pipeline, race harness, archive bench) + 6 vitest + 12 Playwright** — every job in CI gates merges.
+
+## Running locally
 
 ```bash
-cargo test -p domain
-```
-- `retry::tests`: fixed (10,10,10), linear (10,20,30), exponential (5,10,20,40), max_delay cap.
-- `schedule::tests`: hourly cron (`0 * * * * *`), reject bad cron/tz, Asia/Kolkata daily.
-- `job::validate_transition`: `Scheduled->Queued`, `Queued->Claimed`, etc., rejects invalid like `Completed->Queued`.
+# fast loop
+cargo test -p common -p domain
+npm --prefix frontend run test
 
-## Integration (DB)
+# database integration (per-test throwaway databases; needs Postgres)
+DATABASE_URL=postgres://postgres@127.0.0.1:5433/job_scheduler_test cargo test -p db
 
-Run against the Compose PostgreSQL service:
+# full pipeline e2e (needs Postgres + JetStream-enabled NATS)
+DATABASE_URL=postgres:///job_scheduler_test NATS_URL=nats://127.0.0.1:4222 \
+  cargo test -p worker --test pipeline_e2e -- --include-ignored
 
-```bash
-DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/job_scheduler cargo test -p db -- --test-threads=1
-```
+# browser e2e (boots the api itself; override E2E_* to target existing services)
+cd frontend && npx playwright install chromium && npx playwright test
 
-Manual SQL tests (also in `psql`):
-
-- **Idempotency**: `INSERT jobs (queue_id, idempotency_key) ...` -> second with same key -> `unique_violation`.
-- **Concurrency**: Two workers `SELECT ... FOR UPDATE NOWAIT` on same queue -> second gets `could not obtain lock` -> NAK with delay, `RUNNING` never exceeds `max_concurrency` (verified by flooding 20 sleep jobs with concurrency 3, polling `stats`).
-- **Lease fencing**: Worker A claim `epoch=1`, worker B claim after `lease_expires_at` -> `epoch=2`, A's `UPDATE ... WHERE epoch=1` affects 0 rows.
-- **Cron dedup**: Two schedulers `INSERT scheduled_occurrences (job_id, fire_time) ON CONFLICT DO NOTHING` -> one succeeds, other `0 rows`, only one job created.
-
-## API lifecycle validation
-
-The manual validation workflow covers:
-- Auth register/login, org/project/queue CRUD
-- Immediate job `Queueds->Completed` (2s)
-- Delayed job `Scheduled->Queued` after `scheduled_for`
-- Batch 5 jobs -> `batches` table + 5 jobs
-- Always_fail 3x -> `RETRY_WAIT` with exponential delay -> `FAILED` + DLQ
-- Pause/resume: `is_paused=true` -> job stays Queued, resume -> completes
-- Concurrency: flood 10 sleep 3s with concurrency 3 -> `running <=3` invariant holds for 5 polls
-- Cron: `* * * * * *` -> at least 1 occurrence in 8s
-- Pagination: `page_size=2` returns 2, `total` correct
-
-Run it against a clean Compose environment and record the resulting job states
-through the dashboard, API, and `psql` counts.
-
-## Chaos
-
-**Worker crash**: `kill -9 worker` mid `sleep 10` job -> NATS AckWait (60s) expires -> redelivery -> new worker claims `epoch=2` -> old worker's `complete` fenced (0 rows) -> new worker completes. Verified by `lease_epoch` increment and `job_executions` shows `ABANDONED` + `COMPLETED`.
-
-**Relay crash**: `kill relay` after `claim` but before `DELETE` -> `relay_locked_until` expires (30s) -> another relay reclaims same `Nats-Msg-Id` -> JetStream dedup suppresses duplicate within 2m, but even if delivered, handler idempotent.
-
-**API crash**: `kill -9 api` during `BEGIN` -> `ROLLBACK` -> no job/outbox (verified by counts).
-
-**DB outage**: `psql` down -> worker `renew_lease` fails, logs error, does not falsely mark `COMPLETED`.
-
-## Observability & Manual
-
-- `GET /metrics` -> `queued, running, completed, failed, dlq, pool_size`
-- `GET /queues/:id/stats` per queue
-- `GET /workers` -> `ONLINE/STALE/OFFLINE` based on `NOW - last_heartbeat`
-- `EXPLAIN (ANALYZE, BUFFERS) SELECT ... WHERE status='QUEUED' ORDER BY priority` -> uses `idx_jobs_queued`
-- Frontend: queue health cards, worker table, job explorer with filters, execution timeline, logs, and pause/resume controls.
-
-## Load
-
-The repository includes a controlled k6 admission-load test:
-```
-k6 run bench/k6.js
+# coverage
+cargo llvm-cov --workspace --lib --summary-only     # Rust
+npm --prefix frontend run test:coverage             # vitest v8 coverage
 ```
 
-It ramps from 10 to 100 virtual users and requires more than 99% `202 Accepted`
-responses. The 2026-08-21 local run completed 11,100 accepted submissions at
-219 jobs/s, with p95 166 ms and p99 below 200 ms.
+## Design decisions worth knowing
 
-## Bonus-feature verification
+* **Per-test databases.** Each integration test creates a throwaway
+  `js_test_<uuid>` database and applies all migrations *twice*. That both
+  isolates parallel tests completely and continuously proves every migration
+  is idempotent — a drifted schema converges without manual surgery.
+* **Migrations are applied by the code under test**, not by fixtures: the
+  pipeline e2e runs `sqlx::migrate!` exactly like the API does at startup.
+* **No mocks below the unit layer.** The db integration tests and pipeline e2e
+  speak to real Postgres and real JetStream; the only stubs anywhere are
+  fetch-level doubles in the refresh-wrapper unit test.
+* **Determinism knobs for screenshots** live in config/CSS (fixed viewport,
+  `prefers-reduced-motion` gated pulse animation, masked timestamp regions),
+  not in ad-hoc sleeps.
+* **Flake policy**: a failing test is a bug — either in product code or in the
+  test's isolation model. The historical TRUNCATE race was eliminated by the
+  per-test-database harness rather than by retries.
 
-- **RBAC**: add a viewer through `POST /organizations/:id/members`; read
-  endpoints return `200`, while queue creation, pause/resume, and job creation
-  return `403`. Repeat with a member and admin to verify the write/admin split.
-- **Rate limiting**: create a queue with `rate_limit: 2` and
-  `rate_window_secs: 60`; the third submission must return `429 RateLimited`.
-- **Workflow DAG**: create `A,B -> C`; verify C stays `WAITING` until both A
-  and B complete, then receives an outbox event and reaches `COMPLETED`.
-- **Queue sharding**: create a queue with `shard_count: 4`, submit jobs with
-  stable idempotency keys, and verify `jobs.shard_id` is 0–3 and NATS subjects
-  contain the corresponding `shard.{id}` token.
-- **Live updates**: connect with a Bearer token to `/events/stream?project_id=`
-  or `/events/ws?project_id=`; a user outside that organization receives `403`.
-- **AI summaries**: configure `AI_SUMMARIES_ENABLED=true` and `OPENAI_API_KEY`,
-  generate a DLQ entry, then verify `GET /dlq/:id/summary` returns a stored
-  provider model result. Do not use credentials in test fixtures or logs.
+## CI topology (`.github/workflows/ci.yml`)
 
-## Test Evidence (2026-08-20 run)
+| Job | Services | Runs |
+|---|---|---|
+| `test` | postgres, nats(-js) | fmt check · build · `cargo test --workspace` (parallel-safe) · clippy `-D warnings` · vitest · dashboard build · npm audit |
+| `pipeline-e2e` | postgres, nats(-js) | worker pipeline e2e with `--include-ignored` |
+| `frontend-e2e` | postgres, nats(-js) | builds dashboard, installs Chromium, runs Playwright suite |
+| `coverage` | postgres | `cargo llvm-cov` summary across workspace libs |
 
-- Full workspace suite: 12/12 tests passed against PostgreSQL 18.
-- Database integration: idempotency, cron deduplication, lease fencing, and
-  capacity contention passed against a live Docker PostgreSQL service.
-- API lifecycle: immediate, delayed, batch, retry/DLQ, pause/resume,
-  concurrency, cron, and pagination were exercised against PostgreSQL + NATS.
-- External-result safety: an `external_payment` timeout remains
-  `UNKNOWN_EXTERNAL_RESULT`; the scheduler never guesses the downstream result.
+All jobs gate merges; none are allow-failure.

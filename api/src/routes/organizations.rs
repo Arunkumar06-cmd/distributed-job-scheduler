@@ -49,7 +49,8 @@ pub async fn create(
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
-    let org = queries::create_organization(&state.pool, &req.name, &req.slug, auth.user_id).await?;
+    let slug = common::ids::normalize_slug(&req.slug);
+    let org = queries::create_organization(&state.pool, &req.name, &slug, auth.user_id).await?;
     let _ = state.broadcast.send(format!("org.created:{}", org.id));
     Ok((StatusCode::CREATED, Json(serde_json::json!(org))))
 }
@@ -93,7 +94,33 @@ pub async fn upsert_membership(
     queries::find_user_by_id(&state.pool, req.user_id)
         .await?
         .ok_or_else(|| AppError::NotFound("user not found".to_string()))?;
+
+    // Owner grants are immutable through this endpoint: ownership changes are a
+    // deliberate transfer, and letting admins demote owners could leave an org
+    // with no admin at all.
+    let target_role: Option<(String,)> = sqlx::query_as(
+        "SELECT role::text FROM org_memberships WHERE org_id = $1 AND user_id = $2",
+    )
+    .bind(org_id)
+    .bind(req.user_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if matches!(target_role.as_ref().map(|(r,)| r.as_str()), Some("owner")) {
+        return Err(AppError::Forbidden(
+            "cannot modify an organization owner's role via this endpoint".to_string(),
+        ));
+    }
+
     queries::upsert_org_membership(&state.pool, org_id, req.user_id, &req.role).await?;
+    queries::append_audit(
+        &state.pool,
+        auth.user_id,
+        Some(org_id),
+        "org.membership.upsert",
+        &req.user_id.to_string(),
+        serde_json::json!({"role": req.role}),
+    )
+    .await?;
     Ok(Json(MembershipResponse {
         org_id,
         user_id: req.user_id,

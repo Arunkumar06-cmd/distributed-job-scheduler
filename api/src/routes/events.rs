@@ -98,14 +98,26 @@ pub async fn ws_handler(
 async fn handle_ws(mut socket: WebSocket, state: AppState, project_id: Uuid) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
     loop {
-        ticker.tick().await;
-        let snapshot = project_snapshot(&state, project_id).await;
-        if socket
-            .send(Message::Text(snapshot.to_string()))
-            .await
-            .is_err()
-        {
-            break;
+        // Watch the inbound half so client disconnects tear this down
+        // immediately instead of waiting for a failed send.
+        tokio::select! {
+            _ = ticker.tick() => {
+                let snapshot = project_snapshot(&state, project_id).await;
+                if socket
+                    .send(Message::Text(snapshot.to_string()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    None | Some(Err(_)) => break,
+                    Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(_)) => continue,
+                }
+            }
         }
     }
 }

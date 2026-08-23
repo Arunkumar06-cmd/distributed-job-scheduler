@@ -12,12 +12,13 @@ async fn main() -> anyhow::Result<()> {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
-                .with_level(true),
+                .with_level(true)
+                .json(),
         )
         .init();
 
     let config = Arc::new(Config::from_env());
-    let pool = db::pool::connect(&config.database_url).await?;
+    let pool = db::pool::connect_with_size(&config.database_url, config.outbox_pool_size).await?;
     let nats = async_nats::connect(&config.nats_url).await?;
     let publisher = outbox::publisher::Publisher::new(nats);
     let shutdown = tokio_util::sync::CancellationToken::new();

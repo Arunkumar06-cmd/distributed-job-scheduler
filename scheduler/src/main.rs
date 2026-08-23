@@ -12,7 +12,8 @@ async fn main() -> anyhow::Result<()> {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
-                .with_level(true),
+                .with_level(true)
+                .json(),
         )
         .init();
 

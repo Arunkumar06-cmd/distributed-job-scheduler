@@ -50,6 +50,107 @@ impl HandlerRegistry {
     }
 }
 
+/// The standard demo/test handler set. Shared by the supervisor startup path
+/// and the new-queue watcher so every consumer sees identical routing.
+pub async fn with_default_handlers() -> Arc<HandlerRegistry> {
+    let registry = Arc::new(HandlerRegistry::new());
+    registry.register(Arc::new(EchoHandler)).await;
+    registry.register(Arc::new(SleepHandler)).await;
+    registry.register(Arc::new(ExternalPaymentHandler)).await;
+    registry
+        .register(Arc::new(AlwaysFailHandler {
+            message: "intentional test failure".to_string(),
+        }))
+        .await;
+    registry
+}
+
+/// Runs a handler under a panic guard and a hard timeout.
+///
+/// - A panicking handler must not take down the consumer task that serves the
+///   subject; the panic is converted into a retryable failure.
+/// - A handler that awaits forever would otherwise pin its consumer forever.
+///   Handlers are contractually idempotent, so timeout => retry is safe.
+pub async fn run_protected<F>(
+    timeout_secs: u64,
+    fut: F,
+) -> HandlerResult
+where
+    F: std::future::Future<Output = HandlerResult>,
+{
+    let timed = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs.max(1)),
+        futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(fut)),
+    )
+    .await;
+
+    match timed {
+        Err(_) => HandlerResult::Retry {
+            message: format!("handler exceeded {}s timeout", timeout_secs),
+            kind: "handler_timeout".to_string(),
+        },
+        Ok(Err(panic_payload)) => {
+            let detail = panic_payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            HandlerResult::Retry {
+                message: format!("handler panicked: {detail}"),
+                kind: "handler_panicked".to_string(),
+            }
+        }
+        Ok(Ok(result)) => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn panic_becomes_retryable_failure() {
+        let result = run_protected(
+            5,
+            async {
+                panic!("boom inside handler");
+                #[allow(unreachable_code)]
+                HandlerResult::Ok(None)
+            },
+        )
+        .await;
+        match result {
+            HandlerResult::Retry { message, kind } => {
+                assert!(message.contains("boom inside handler"));
+                assert_eq!(kind, "handler_panicked");
+            }
+            other => panic!("expected Retry, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_becomes_retryable_failure() {
+        let result = run_protected(
+            1,
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                HandlerResult::Ok(None)
+            },
+        )
+        .await;
+        match result {
+            HandlerResult::Retry { kind, .. } => assert_eq!(kind, "handler_timeout"),
+            other => panic!("expected Retry, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn healthy_handler_passes_through() {
+        let result = run_protected(5, async { HandlerResult::Ok(Some(serde_json::json!(1))) }).await;
+        assert!(matches!(result, HandlerResult::Ok(_)));
+    }
+}
+
 /// A built-in echo handler for testing/demos.
 pub struct EchoHandler;
 

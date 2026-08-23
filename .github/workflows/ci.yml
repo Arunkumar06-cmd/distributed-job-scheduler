@@ -26,20 +26,9 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
-      nats:
-        image: nats:2.10-alpine
-        command: ["-js"]
-        ports:
-          - 4222:4222
-        options: >-
-          --health-cmd "wget --spider -q http://localhost:8222/healthz || exit 1"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 5
 
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/job_scheduler
-      NATS_URL: nats://127.0.0.1:4222
       JWT_SECRET: ci-test-secret-32bytes-minimum-length
 
     steps:
@@ -63,7 +52,7 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace --verbose
 
-      - name: Run tests (db tests isolate per-test databases; serial keeps logs readable)
+      - name: Run tests
         run: cargo test --workspace
 
       - name: Clippy
@@ -95,15 +84,16 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 5s
-          --health-timeout 3s --health-retries 5
-      nats:
-        image: nats:2.10-alpine
-        command: ["-js"]
-        ports: ["4222:4222"]
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/job_scheduler
       NATS_URL: nats://127.0.0.1:4222
+      JWT_SECRET: ci-test-secret-32bytes-minimum-length
+
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -114,10 +104,19 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Start NATS JetStream
+        run: docker run -d --name nats -p 4222:4222 nats:2.10-alpine -js
+
+      - name: Wait for NATS
+        run: sleep 3
+
       - name: Outbox → JetStream → worker pipeline proof
         run: cargo test -p worker --test pipeline_e2e -- --include-ignored
+
       - name: Multi-worker race harness (zero double-execution across replicas)
         run: cargo test -p worker --test race_harness -- --include-ignored
+
       - name: Archive throughput benchmark
         run: cargo test -p db --test archive_bench -- --include-ignored --nocapture
 
@@ -132,16 +131,16 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 5s
-          --health-timeout 3s --health-retries 5
-      nats:
-        image: nats:2.10-alpine
-        command: ["-js"]
-        ports: ["4222:4222"]
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
     env:
       E2E_DATABASE_URL: postgres://postgres:postgres@localhost:5432/job_scheduler
       E2E_NATS_URL: nats://127.0.0.1:4222
       JWT_SECRET: e2e-secret-value-0123456789abcdef
+
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -163,6 +162,8 @@ jobs:
       - name: Install Playwright browsers
         working-directory: frontend
         run: npx playwright install --with-deps chromium
+      - name: Start NATS JetStream
+        run: docker run -d --name nats -p 4222:4222 nats:2.10-alpine -js
       - name: Run browser e2e against real api
         working-directory: frontend
         run: npx playwright test
@@ -178,10 +179,14 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 5s
-          --health-timeout 3s --health-retries 5
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/job_scheduler
+
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

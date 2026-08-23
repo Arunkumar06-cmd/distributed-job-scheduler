@@ -4,9 +4,11 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use crate::extract::ApiJson;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
+use crate::routes::validate::{reject_control_chars};
 use crate::state::AppState;
 use common::{AppError, AppResult};
 use db::queries;
@@ -25,10 +27,12 @@ pub struct CreateProjectReq {
 pub async fn create(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(req): Json<CreateProjectReq>,
+    ApiJson(req): crate::extract::ApiJson<CreateProjectReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
+    reject_control_chars("name", &req.name)?;
+    reject_control_chars("description", req.description.as_deref().unwrap_or(""))?;
     queries::require_org_admin(&state.pool, auth.user_id, req.org_id).await?;
     let slug = common::ids::normalize_slug(&req.slug);
     let proj = queries::create_project(

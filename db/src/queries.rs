@@ -390,7 +390,7 @@ pub async fn batch_queue_stats(pool: &PgPool, queue_ids: &[Uuid]) -> AppResult<V
               COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed,
               COALESCE(SUM(CASE WHEN status = 'SCHEDULED' THEN 1 ELSE 0 END), 0) AS scheduled,
               COALESCE(SUM(CASE WHEN status = 'CLAIMED' THEN 1 ELSE 0 END), 0) AS claimed,
-              0 AS dlq
+              0::int8 AS dlq
             FROM jobs WHERE queue_id = ANY($1)
             GROUP BY queue_id"#,
     )

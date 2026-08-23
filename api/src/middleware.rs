@@ -60,6 +60,64 @@ pub async fn request_id_middleware(req: Request, next: Next) -> Response {
     common::ids::with_request_id(id, next.run(req)).await
 }
 
+/// Converts framework-generated plain-text error responses (body-limit
+/// rejections, query-deserialization failures, 404/405 from the router)
+/// into the standard JSON error envelope. Responses already carrying
+/// `application/json` are left untouched — those come from AppError.
+pub async fn envelope_plain_errors(
+    req: Request,
+    next: Next,
+) -> Response {
+    let mut res = next.run(req).await;
+    let status = res.status();
+    if !(status.is_client_error() || status.is_server_error()) {
+        return res;
+    }
+    let is_json = res
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("application/json"))
+        .unwrap_or(false);
+    if is_json {
+        return res;
+    }
+
+    use axum::http::StatusCode;
+    let (code, message) = match status {
+        StatusCode::NOT_FOUND => ("NotFound", "resource not found"),
+        StatusCode::UNAUTHORIZED => ("Unauthorized", "unauthorized"),
+        StatusCode::FORBIDDEN => ("Forbidden", "forbidden"),
+        StatusCode::BAD_REQUEST => ("Validation", "invalid request"),
+        StatusCode::PAYLOAD_TOO_LARGE => ("PayloadTooLarge", "request body too large"),
+        StatusCode::TOO_MANY_REQUESTS => ("RateLimited", "too many requests"),
+        StatusCode::METHOD_NOT_ALLOWED => ("NotFound", "method not allowed"),
+        _ => ("Internal", "internal server error"),
+    };
+
+    // Drain the old body so the connection is reusable.
+    let _ = axum::body::to_bytes(
+        std::mem::replace(
+            res.body_mut(),
+            axum::body::Body::empty(),
+        ),
+        64 * 1024,
+    )
+    .await;
+
+    let body = serde_json::json!({
+        "error": {"code": code, "message": message},
+    });
+    let mut res = Response::new(axum::body::Body::from(body.to_string()));
+    *res.status_mut() = status;
+    res.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    res
+}
+
+
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: Uuid,

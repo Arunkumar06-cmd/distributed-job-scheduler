@@ -5,7 +5,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use crate::extract::ApiJson;
 use validator::Validate;
+use crate::routes::validate::reject_control_chars;
 
 use crate::middleware::AuthUser;
 use crate::state::AppState;
@@ -56,10 +58,12 @@ fn deprecated(mut res: Response) -> Response {
 pub async fn create(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(req): Json<CreateQueueReq>,
+    ApiJson(req): crate::extract::ApiJson<CreateQueueReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
+    reject_control_chars("name", &req.name)?;
+    if let Some(d) = req.description.as_deref() { reject_control_chars("description", d)?; }
     let proj = queries::get_project(&state.pool, req.project_id)
         .await?
         .ok_or_else(|| AppError::NotFound("project not found".to_string()))?;
@@ -173,12 +177,13 @@ pub async fn update(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(queue_id): Path<Uuid>,
-    Json(req): Json<UpdateQueueReq>,
+    ApiJson(req): crate::extract::ApiJson<UpdateQueueReq>,
 ) -> AppResult<Json<serde_json::Value>> {
     // Reconfiguration (concurrency, priorities, acks) is an admin operation —
     // same bar as create/pause/resume, not plain membership.
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
+    if let Some(d) = req.description.as_deref() { reject_control_chars("description", d)?; }
     let ctx = queries::authorize_queue(&state.pool, auth.user_id, queue_id)
         .await?
         .ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;

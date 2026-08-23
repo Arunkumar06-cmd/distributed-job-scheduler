@@ -4,11 +4,12 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use crate::extract::ApiJson;
 use serde::Deserialize;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
-use crate::routes::validate::{normalize_idempotency_key, validate_payload, validate_retry_config};
+use crate::routes::validate::{normalize_idempotency_key, reject_control_chars, validate_payload, validate_retry_config};
 use crate::routes::queues;
 use crate::state::AppState;
 use common::{ids, AppError, AppResult};
@@ -65,7 +66,7 @@ pub async fn create(
     auth: AuthUser,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<CreateJobReq>,
+    ApiJson(req): crate::extract::ApiJson<CreateJobReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     // Authz + tenant context in a single round trip.
     let ctx = queries::authorize_queue(&state.pool, auth.user_id, req.queue_id)
@@ -95,6 +96,9 @@ pub async fn create(
         return Err(AppError::Validation("priority must be 0..100".to_string()));
     }
     validate_payload(&req.payload)?;
+    if req.payload.get("type").and_then(|v| v.as_str()).map(|t| reject_control_chars("type", t)).transpose().is_err() {
+        return Err(AppError::Validation("payload.type contains control characters".into()));
+    }
 
     // Retry config layering: explicit request > queue's retry policy template
     // > queue columns. This is what keeps retry_policies live configuration.
@@ -316,7 +320,7 @@ pub struct BatchJobItem {
 pub async fn create_batch(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(req): Json<BatchCreateReq>,
+    ApiJson(req): crate::extract::ApiJson<BatchCreateReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;

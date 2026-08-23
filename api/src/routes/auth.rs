@@ -1,4 +1,5 @@
 use axum::{extract::State, http::StatusCode, Json};
+use crate::extract::ApiJson;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -56,7 +57,7 @@ fn internal(e: impl std::fmt::Display) -> AppError {
 
 pub async fn register(
     State(state): State<AppState>,
-    Json(req): Json<RegisterReq>,
+    ApiJson(req): crate::extract::ApiJson<RegisterReq>,
 ) -> AppResult<(StatusCode, Json<AuthResp>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
@@ -80,7 +81,7 @@ pub async fn register(
 
 pub async fn login(
     State(state): State<AppState>,
-    Json(req): Json<LoginReq>,
+    ApiJson(req): crate::extract::ApiJson<LoginReq>,
 ) -> AppResult<Json<AuthResp>> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
@@ -109,7 +110,7 @@ pub async fn login(
 /// access TTL bounds any stolen-credential window to one hour.
 pub async fn refresh(
     State(state): State<AppState>,
-    Json(req): Json<RefreshReq>,
+    ApiJson(req): crate::extract::ApiJson<RefreshReq>,
 ) -> AppResult<Json<AuthResp>> {
     let data = verify_kind(&req.refresh_token, TokenKind::Refresh, &state.config)
         .map_err(|_| AppError::Unauthorized)?;

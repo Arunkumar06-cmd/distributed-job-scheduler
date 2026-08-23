@@ -29,6 +29,9 @@ pub enum AppError {
     #[error("rate limit exceeded: {0}")]
     RateLimited(String),
 
+    #[error("payload too large")]
+    PayloadTooLarge,
+
     #[error("stale lease (fenced worker)")]
     StaleLease,
 
@@ -72,7 +75,7 @@ impl AppError {
             AppError::Validation(_) => ErrorCode::Validation,
             AppError::QueuePaused => ErrorCode::QueuePaused,
             AppError::QueueAtCapacity => ErrorCode::QueueAtCapacity,
-            AppError::RateLimited(_) => ErrorCode::RateLimited,
+            AppError::RateLimited(_) | AppError::PayloadTooLarge => ErrorCode::PayloadTooLarge,
             AppError::StaleLease => ErrorCode::StaleLease,
             AppError::Internal(_)
             | AppError::Sqlx(_)
@@ -106,6 +109,7 @@ pub enum ErrorCode {
     RateLimited,
     StaleLease,
     Internal,
+    PayloadTooLarge,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,7 +137,7 @@ impl IntoResponse for AppError {
             }
             AppError::Validation(_) => StatusCode::BAD_REQUEST,
             AppError::QueueAtCapacity => StatusCode::CONFLICT,
-            AppError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::RateLimited(_) | AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

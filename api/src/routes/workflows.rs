@@ -4,6 +4,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use crate::extract::ApiJson;
 use std::collections::HashMap;
 use uuid::Uuid;
 use validator::Validate;
@@ -48,7 +49,7 @@ pub struct WorkflowResp {
 pub async fn create(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(req): Json<CreateWorkflowReq>,
+    ApiJson(req): crate::extract::ApiJson<CreateWorkflowReq>,
 ) -> AppResult<(StatusCode, Json<WorkflowResp>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;

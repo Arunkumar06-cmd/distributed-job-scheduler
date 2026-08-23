@@ -4,10 +4,12 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use crate::extract::ApiJson;
 use serde::Deserialize;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
+use crate::routes::validate::reject_control_chars;
 use crate::state::AppState;
 use common::{AppError, AppResult};
 use db::queries;
@@ -31,7 +33,7 @@ pub struct CreateScheduledReq {
 pub async fn create(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(mut req): Json<CreateScheduledReq>,
+    ApiJson(mut req): crate::extract::ApiJson<CreateScheduledReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
@@ -49,6 +51,7 @@ pub async fn create(
     // never carry an unparseable tz that breaks later edits.
     domain::schedule::parse_timezone(req.timezone.as_deref().unwrap_or("UTC"))
         .map_err(|e| AppError::Validation(e.to_string()))?;
+    reject_control_chars("name", &req.name)?;
     let queue = queries::get_queue(&state.pool, req.queue_id)
         .await?
         .ok_or_else(|| AppError::NotFound("queue not found".to_string()))?;

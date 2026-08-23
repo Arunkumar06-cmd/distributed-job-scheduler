@@ -97,7 +97,8 @@
               "QueueAtCapacity",
               "RateLimited",
               "StaleLease",
-              "Internal"
+              "Internal",
+              "PayloadTooLarge"
             ]
           },
           "message": {

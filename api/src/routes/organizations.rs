@@ -4,9 +4,11 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use crate::extract::ApiJson;
 use validator::Validate;
 
 use crate::middleware::AuthUser;
+use crate::routes::validate::reject_control_chars;
 use crate::state::AppState;
 use common::{AppError, AppResult};
 use db::queries;
@@ -45,10 +47,12 @@ pub struct MembershipResponse {
 pub async fn create(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(req): Json<CreateOrgReq>,
+    ApiJson(req): crate::extract::ApiJson<CreateOrgReq>,
 ) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
     req.validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
+    reject_control_chars("name", &req.name)?;
+    reject_control_chars("slug", &req.slug)?;
     let slug = common::ids::normalize_slug(&req.slug);
     let org = queries::create_organization(&state.pool, &req.name, &slug, auth.user_id).await?;
     let _ = state.broadcast.send(format!("org.created:{}", org.id));
@@ -86,7 +90,7 @@ pub async fn upsert_membership(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(org_id): Path<Uuid>,
-    Json(req): Json<UpsertMembershipReq>,
+    ApiJson(req): crate::extract::ApiJson<UpsertMembershipReq>,
 ) -> AppResult<Json<MembershipResponse>> {
     req.validate()
         .map_err(|error| AppError::Validation(error.to_string()))?;

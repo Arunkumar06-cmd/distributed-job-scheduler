@@ -13,6 +13,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use api::{ai_summaries, routes, state::AppState};
+use axum::extract::DefaultBodyLimit;
 use common::Config;
 
 #[tokio::main]
@@ -190,6 +191,8 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api/v1", core.clone())
         .merge(core)
         .with_state(state)
+        .layer(middleware::from_fn(api::middleware::envelope_plain_errors))
+        .layer(DefaultBodyLimit::max(512 * 1024))
         .layer(
             CorsLayer::new()
                 .allow_origin(cors_origin)

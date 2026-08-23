@@ -121,3 +121,31 @@ test.describe('dashboard e2e', () => {
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
   })
 })
+
+test('websocket stream delivers authenticated project snapshots', async ({ page }) => {
+  await register(page)
+  // Grab the access token the app stored, then open a raw WS like an external client would.
+  const token = await page.evaluate(() => localStorage.getItem('token'))
+  const orgResp = await page.request.post('/api/v1/organizations', {
+    data: { name: `WS Org ${Date.now()}`, slug: `ws-${Date.now()}` },
+    headers: { authorization: `Bearer ${token}` },
+  })
+  expect(orgResp.status()).toBe(201)
+  const org = await orgResp.json()
+  await page.request.post('/api/v1/projects', {
+    data: { org_id: org.id, name: 'WSP', slug: `ws-p-${Date.now()}` },
+    headers: { authorization: `Bearer ${token}` },
+  })
+  const projs = await (await page.request.get(`/api/v1/projects?org_id=${org.id}`, { headers: { authorization: `Bearer ${token}` } })).json()
+  const projectId = projs[0].id
+
+  const frame = await page.evaluate(({ pid, tok }) => new Promise((resolve, reject) => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    const ws = new WebSocket(`${proto}://${location.host}/api/v1/events/ws?project_id=${pid}&access_token=${tok}`)
+    const timer = setTimeout(() => reject(new Error('no ws frame in 10s')), 10_000)
+    ws.onmessage = ev => { clearTimeout(timer); resolve(JSON.parse(ev.data)); ws.close() }
+    ws.onerror = () => { clearTimeout(timer); reject(new Error('ws error')) }
+  }), { pid: projectId, tok: token })
+  expect(frame.type).toBe('project.snapshot')
+  expect(frame.counts).toBeTruthy()
+})

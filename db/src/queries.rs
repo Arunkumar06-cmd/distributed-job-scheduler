@@ -663,7 +663,8 @@ pub async fn count_jobs_for_user(
 /// plus 24h success rate and average duration for the header metrics.
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct ThroughputBucket {
-    pub bucket: String,
+    /// Full RFC3339 instant; clients render it in their own timezone.
+    pub bucket: chrono::DateTime<chrono::Utc>,
     pub completed: i64,
     pub failed: i64,
 }
@@ -680,7 +681,7 @@ pub async fn queue_throughput(
                       date_trunc('minute', NOW()),
                       '1 minute') AS m
            )
-           SELECT to_char(span.m, 'HH24:MI') AS bucket,
+           SELECT span.m AS bucket,
                   COALESCE(COUNT(e.id) FILTER (WHERE e.status = 'COMPLETED'), 0)::int8 AS completed,
                   COALESCE(COUNT(e.id) FILTER (WHERE e.status IN ('FAILED','ABANDONED')), 0)::int8 AS failed
            FROM span

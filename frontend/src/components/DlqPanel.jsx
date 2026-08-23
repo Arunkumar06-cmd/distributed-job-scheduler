@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react'
+import { Modal } from './Modals'
 import { api } from '../lib/api'
-import { short, dt, cap } from '../lib/format'
+import { short, dt } from '../lib/format'
 
 export function DlqPanel({ q, auth, note, onChanged }) {
   const [entries, setEntries] = useState([])
   const [busy, setBusy] = useState(null)
+  const [summary, setSummary] = useState(null)
   const load = useCallback(async () => {
     try {
       const r = await api(`/dlq?queue_id=${q.id}&page_size=50`, {}, auth.token)
@@ -36,11 +38,27 @@ export function DlqPanel({ q, auth, note, onChanged }) {
               <td><em className="failed">{cap(e.reason)}</em></td>
               <td>{e.attempt}</td>
               <td className="muted">{dt(e.moved_at)}</td>
-              <td>{!e.replayed_to_job_id && <button className="text" disabled={busy===e.id} onClick={() => replay(e.id)} aria-label={`Replay dead-lettered job ${short(e.job_id)}`}>{busy===e.id?'Replaying…':'Replay'}</button>}
+              <td>
+                <button className="text" onClick={() => {
+                  api(`/dlq/${e.id}/summary`, {}, auth.token)
+                    .then(r => setSummary(r))
+                    .catch(() => setSummary({ summary:'No AI summary has been generated for this entry yet.', root_cause:null, remediation:null, model:null }))
+                }} aria-label={`AI summary for ${short(e.job_id)}`}>✨ AI</button>
+                {!e.replayed_to_job_id && <button className="text" disabled={busy===e.id} onClick={() => replay(e.id)} aria-label={`Replay dead-lettered job ${short(e.job_id)}`}>{busy===e.id?'Replaying…':'Replay'}</button>}
                   {e.replayed_to_job_id && <span className="muted">Replayed</span>}</td>
             </tr>)}
         </tbody>
       </table>
     </div>
+    {summary && (
+      <Modal title="AI failure analysis" close={() => setSummary(null)}>
+        <div className="ai-summary">
+          <p><span className="kicker">Summary</span>{summary.summary}</p>
+          {summary.root_cause && <p><span className="kicker">Root cause</span>{summary.root_cause}</p>}
+          {summary.remediation && <p><span className="kicker">Remediation</span>{summary.remediation}</p>}
+          <p className="muted" style={{fontSize:11}}>model: {summary.model || '—'}</p>
+        </div>
+      </Modal>
+    )}
   </section>
 }

@@ -6,7 +6,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import { Metric, QueueCharts } from './components/Metrics'
 import { ThroughputChart, StatusDonut, LifecycleStrip } from './components/Charts'
 import { ActivityFeed } from './components/ActivityFeed'
-import { relTime } from './lib/format'
+import { relTime, fmtTimeIST } from './lib/format'
 import { JobsPanel, PAGE_SIZE } from './components/JobsPanel'
 import { JobDetails } from './components/JobDetails'
 import { DlqPanel } from './components/DlqPanel'
@@ -160,16 +160,16 @@ function QueueView({q,stats,auth,refresh,note,recent}){
       <Metric x="Completed" y={stats.completed||0} c="green"/>
       <Metric x="Needs attention" y={(stats.failed||0)+(stats.dlq||0)} d={`${stats.dlq||0} in DLQ`} c="red"/>
     </div>
-    <LifecycleStrip s={stats}/>
+    <LifecycleStrip s={stats} onStageClick={(st)=>{setTab('jobs');setSearch('');setFilter(st||'')}}/>
     <div className="metrics">
-      <Metric x="Success rate · 24h" y={`${tp?.success_rate_24h ?? '—'}%`} c="green"/>
-      <Metric x="Avg duration · 24h" y={tp ? `${Math.round(tp.avg_duration_ms_24h)} ms` : '—'} c="blue"/>
+      <Metric x="Success rate · 24h" y={Number.isFinite(+tp?.success_rate_24h) ? `${tp.success_rate_24h}%` : '—'} c="green"/>
+      <Metric x="Avg duration · 24h" y={Number.isFinite(+tp?.avg_duration_ms_24h) ? `${Math.round(tp.avg_duration_ms_24h)} ms` : '—'} c="blue"/>
       <Metric x="Scheduled" y={stats.scheduled||0} d="waiting for their moment" c="purple"/>
       <Metric x="In retry wait" y={stats.retry_wait||0} d="backing off before next attempt" c="purple"/>
     </div>
     <div className="charts-row">
       <ThroughputChart buckets={tp?.buckets||[]}/>
-      <StatusDonut counts={{
+      <StatusDonut onSegmentClick={(k)=>{setTab('jobs');setSearch('');setFilter(k)}} counts={{
         QUEUED:stats.queued,RUNNING:stats.running,RETRY_WAIT:stats.retry_wait,
         FAILED:stats.failed,SCHEDULED:stats.scheduled,CLAIMED:stats.claimed,WAITING:stats.waiting,
       }} total={(stats.queued||0)+(stats.running||0)+(stats.completed||0)+(stats.failed||0)+(stats.retry_wait||0)+(stats.scheduled||0)}/>

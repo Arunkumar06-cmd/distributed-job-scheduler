@@ -14,3 +14,8 @@ export const relTime = (x) => {
   if (s < 86400) return `${Math.round(s / 3600)}h ago`
   return `${Math.round(s / 86400)}d ago`
 }
+
+const IST = new Intl.DateTimeFormat('en-IN', {
+  timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false,
+})
+export const fmtTimeIST = (x) => (x ? IST.format(new Date(x)) : '—')

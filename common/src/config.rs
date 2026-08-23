@@ -44,6 +44,9 @@ pub struct Config {
     pub scheduler_pool_size: u32,
     pub openai_api_key: Option<String>,
     pub openai_model: String,
+    /// Any OpenAI-compatible /chat/completions endpoint
+    /// (OpenAI, NVIDIA NIM, vLLM, Ollama-openai, …).
+    pub llm_base_url: String,
     pub ai_summaries_enabled: bool,
     /// Per-user API requests per minute; 0 disables.
     pub api_rate_limit_per_min: u32,
@@ -112,6 +115,10 @@ impl Config {
                 .ok()
                 .filter(|m| !m.trim().is_empty())
                 .unwrap_or_else(|| "gpt-4o-mini".to_string()),
+            llm_base_url: env::var("AI_LLM_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string())
+                .trim_end_matches('/')
+                .to_string(),
             ai_summaries_enabled: env::var("AI_SUMMARIES_ENABLED")
                 .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True"))
                 .unwrap_or(false),

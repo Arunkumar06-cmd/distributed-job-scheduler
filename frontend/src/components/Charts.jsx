@@ -44,14 +44,14 @@ export function ThroughputChart({ buckets, onMinuteClick }) {
                     {fmtTimeIST(d.bucket)} IST
                   </text>
                   <text x={Math.min(x, W - 150) + 10} y={PAD / 2 + 36} fontSize="10">
-                    <tspan fill="#3ddc97">{d.completed} done</tspan>
+                    <tspan fill="#a3e635">{d.completed} done</tspan>
                     <tspan fill="#9aa6bf"> · </tspan>
                     <tspan fill="#fb7185">{d.failed} failed</tspan>
                   </text>
                 </g>
               </>}
               <rect x={x + w * 0.55} y={y(d.completed)} width={w} height={H - PAD - y(d.completed)} rx="1.5"
-                    fill="var(--ok)" opacity={hover && !isHover ? 0.45 : 1}>
+                    fill="#a3e635" opacity={hover && !isHover ? 0.45 : 1}>
                 <title>{`${d.bucket}: ${d.completed} completed`}</title>
               </rect>
               <rect x={x + w * 1.65} y={y(d.failed)} width={w} height={H - PAD - y(d.failed)} rx="1.5"

@@ -67,15 +67,27 @@ pub fn spawn(pool: PgPool, config: Arc<Config>, shutdown: tokio_util::sync::Canc
             };
 
             for entry in &pending {
-                match summarize(
-                    &client,
-                    config.llm_base_url.trim_end_matches('/'),
-                    &api_key,
-                    &config.openai_model,
-                    entry,
-                )
-                .await
-                {
+                // Primary model first; configured fallbacks (e.g.
+                // stepfun-ai/step-3.7-flash) are tried in order on failure.
+                let mut models = vec![config.openai_model.clone()];
+                models.extend(config.llm_model_fallbacks.iter().cloned());
+
+                let mut outcome: anyhow::Result<SummaryOutput> =
+                    Err(anyhow::anyhow!("no model attempted"));
+                for model in &models {
+                    outcome = summarize(
+                        &client,
+                        config.llm_base_url.trim_end_matches('/'),
+                        &api_key,
+                        model,
+                        entry,
+                    )
+                    .await;
+                    if outcome.is_ok() {
+                        break;
+                    }
+                }
+                match outcome {
                     Ok(summary) => {
                         let result = sqlx::query(
                             r#"INSERT INTO failure_summaries (dlq_id, job_id, summary, root_cause, remediation, model)

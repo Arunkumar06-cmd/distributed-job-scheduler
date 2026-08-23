@@ -169,11 +169,17 @@ function QueueView({q,stats,auth,refresh,note,recent}){
     </div>
     <div className="charts-row">
       <ThroughputChart buckets={tp?.buckets||[]}/>
-      <StatusDonut onSegmentClick={(k)=>{setTab('jobs');setSearch('');setFilter(k)}} counts={{
-        QUEUED:stats.queued,RUNNING:stats.running,RETRY_WAIT:stats.retry_wait,
-        FAILED:stats.failed,SCHEDULED:stats.scheduled,CLAIMED:stats.claimed,WAITING:stats.waiting,
-      }} total={(stats.queued||0)+(stats.running||0)+(stats.completed||0)+(stats.failed||0)+(stats.retry_wait||0)+(stats.scheduled||0)}/>
-      <QueueCharts stats={stats} maxConcurrency={q.max_concurrency}/>
+      <StatusDonut
+        onSegmentClick={(k)=>{setTab('jobs');setSearch('');setFilter(k)}}
+        counts={{
+          RUNNING:stats.running,QUEUED:stats.queued,COMPLETED:stats.completed,
+          RETRY_WAIT:stats.retry_wait,FAILED:stats.failed,SCHEDULED:stats.scheduled,CLAIMED:stats.claimed,
+        }}
+        total={(stats.queued||0)+(stats.running||0)+(stats.completed||0)+(stats.failed||0)+(stats.retry_wait||0)+(stats.scheduled||0)+(stats.claimed||0)}
+      />
+      <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
+        <QueueCharts stats={stats} maxConcurrency={q.max_concurrency}/>
+      </div>
     </div>
     <nav className="tabs" role="tablist" aria-label="Queue views">
       <button role="tab" aria-selected={tab==='jobs'} className={tab==='jobs'?'on':''} onClick={()=>setTab('jobs')}>Jobs</button>

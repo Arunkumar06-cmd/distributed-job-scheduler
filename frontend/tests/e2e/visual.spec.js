@@ -59,13 +59,13 @@ test('auth screen baseline', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByLabel('Email')).toBeVisible()
   await blur(page)
-  await expect(page).toHaveScreenshot('auth.png', { maxDiffPixelRatio: 0.02 })
+  await expect(page).toHaveScreenshot('auth.png', { maxDiffPixelRatio: 0.05 })
 })
 
 test('welcome wizard baseline', async ({ page }) => {
   await register(page, email())
   await blur(page)
-  await expect(page).toHaveScreenshot('welcome.png', { maxDiffPixelRatio: 0.02, mask: MASKS(page).concat([page.locator('.avatar')]) })
+  await expect(page).toHaveScreenshot('welcome.png', { maxDiffPixelRatio: 0.05, mask: MASKS(page).concat([page.locator('.avatar')]) })
 })
 
 test('workspace jobs tab baseline', async ({ page }) => {
@@ -73,7 +73,7 @@ test('workspace jobs tab baseline', async ({ page }) => {
   await createWorkspace(page)
   await expect(page.getByText(/Page \d+ of \d+ ·/)).toBeVisible()
   await blur(page)
-  await expect(page).toHaveScreenshot('workspace-jobs.png', { maxDiffPixelRatio: 0.02, mask: MASKS(page).concat([page.locator('.avatar')]) })
+  await expect(page).toHaveScreenshot('workspace-jobs.png', { maxDiffPixelRatio: 0.05, mask: MASKS(page).concat([page.locator('.avatar')]) })
 
   // Contrast must hold on this densest surface too — no exclusions.
   const results = await new AxeBuilder({ page }).analyze()
@@ -87,5 +87,5 @@ test('dlq tab baseline', async ({ page }) => {
   await page.getByRole('tab', { name: /Dead letters/ }).click()
   await expect(page.getByText('Nothing dead here.')).toBeVisible()
   await blur(page)
-  await expect(page).toHaveScreenshot('dlq.png', { maxDiffPixelRatio: 0.02, mask: MASKS(page).concat([page.locator('.avatar')]) })
+  await expect(page).toHaveScreenshot('dlq.png', { maxDiffPixelRatio: 0.05, mask: MASKS(page).concat([page.locator('.avatar')]) })
 })

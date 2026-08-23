@@ -47,6 +47,8 @@ pub struct Config {
     /// Any OpenAI-compatible /chat/completions endpoint
     /// (OpenAI, NVIDIA NIM, vLLM, Ollama-openai, …).
     pub llm_base_url: String,
+    /// Comma-separated fallback models tried in order if the primary fails.
+    pub llm_model_fallbacks: Vec<String>,
     pub ai_summaries_enabled: bool,
     /// Per-user API requests per minute; 0 disables.
     pub api_rate_limit_per_min: u32,
@@ -119,6 +121,13 @@ impl Config {
                 .unwrap_or_else(|_| "https://api.openai.com/v1".to_string())
                 .trim_end_matches('/')
                 .to_string(),
+            llm_model_fallbacks: env::var("AI_MODEL_FALLBACKS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .map(str::to_string)
+                .collect(),
             ai_summaries_enabled: env::var("AI_SUMMARIES_ENABLED")
                 .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True"))
                 .unwrap_or(false),

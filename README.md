@@ -46,12 +46,12 @@ paths, see the [architecture notes](docs/architecture.md).
 
 | Area | Capabilities |
 | --- | --- |
-| Tenancy | Users, organizations, projects, memberships, JWT authentication |
-| Queues | Priority, pause/resume, concurrency limits, retry defaults, rate limits, statistics |
-| Jobs | Immediate, delayed, scheduled, recurring, batch, manual retry, pagination, filtering |
-| Reliability | Atomic claims, capacity tokens, lease renewal, fencing, outbox relay, scheduler leader lock |
-| Operations | Worker heartbeats, execution attempts, structured logs, dead-letter replay, metrics |
-| Extensions | Workflow dependencies, 429 queue admission limits, advisory leader lock, deterministic queue sharding, scoped SSE/WebSocket snapshots, opt-in AI failure summaries |
+| Tenancy | Users, organizations, projects, memberships, JWT access (1h) + rotating refresh (30d) tokens, per-user API rate limiting |
+| Queues | Priority, pause/resume (PATCH or deprecated POST verbs), concurrency limits, retry policies, admission rate limits, statistics, sharding (1–128) |
+| Jobs | Immediate, delayed, scheduled, recurring, batch, manual retry, idempotency keys, pagination, filtering by status/priority/batch/worker |
+| Reliability | Atomic claims with epoch fencing, capacity tokens, lease renewal, stale-lease reaping, UNKNOWN-external-result reconciler, outbox relay with poison-pill backoff, scheduler leader election + NOTIFY wake, archive lifecycle |
+| Operations | Worker heartbeats with outcome counters, execution attempts ledger, structured JSON logs, audit trail for privileged mutations, Prometheus metrics incl. duration histograms, dead-letter replay, AI failure summaries (any OpenAI-compatible endpoint) |
+| Extensions | Workflow DAG dependencies with cycle rejection, scoped SSE/WebSocket snapshots, event-driven worker discovery, deterministic sharding, hot/cold job archival |
 
 ## Run locally
 
@@ -118,49 +118,96 @@ an arbitrary third-party side effect exactly once.
 
 ```text
 SCHEDULED ──► QUEUED ──► CLAIMED ──► RUNNING ──► COMPLETED
-                                      │
-                                      ├──► RETRY_WAIT ──► QUEUED
-                                      └──► FAILED ──► DLQ
+    ▲                                │              │
+    │                                ├─► RETRY_WAIT ─┤──► QUEUED (backoff)
+    └── promotion                    ├─► UNKNOWN_EXTERNAL_RESULT ──► reconciler (dlq/retry/complete)
+   (scheduler tick or                ├─► FAILED ──► DLQ              │
+    NOTIFY wake)                     └─► CANCELLED                   └── replay as new job
+
+WAITING (workflow DAG) ──► QUEUED when all parent edges are satisfied
 ```
+
+Terminal states are `COMPLETED`, `FAILED`, and `CANCELLED`. Every transition is
+validated against the state machine in `domain::job::validate_transition`; the
+reconciler resolves jobs stuck in `UNKNOWN_EXTERNAL_RESULT` after a configurable
+grace period (`UNKNOWN_GRACE_SECS`, default 900 s).
 
 ## Verification
 
 ```bash
-# Rust unit and PostgreSQL integration tests
-cargo test --workspace -- --test-threads=1
+# Rust unit + PostgreSQL integration tests (per-test throwaway databases)
+DATABASE_URL=postgres://… cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 
-# Frontend build and dependency audit
-cd frontend && npm ci && npm run build && npm audit --audit-level=high
+# Full-stack pipeline e2e (needs Postgres + JetStream-enabled NATS)
+cargo test -p worker --test pipeline_e2e -- --include-ignored
+# Multi-worker race harness: 3 replicas × 40 jobs, zero double-execution proof
+cargo test -p worker --test race_harness -- --include-ignored
+# Archive throughput benchmark (~4,400 rows/s on laptop Postgres)
+cargo test -p db --test archive_bench -- --include-ignored --nocapture
+
+# Frontend unit tests + browser e2e + accessibility scans + visual baselines
+cd frontend && npm run test && npx playwright test
 
 # Controlled admission-load test (10 → 50 → 100 virtual users)
 k6 run bench/k6.js
 ```
 
+See [docs/testing.md](docs/testing.md) for the full layer map, CI topology,
+and design decisions behind the isolation model.
+
 Latest local evidence:
 
-- 12/12 Rust tests passed against PostgreSQL 18, including idempotency, cron
-  deduplication, capacity contention, and lease fencing.
-- The API lifecycle was exercised against PostgreSQL and NATS JetStream.
-- The controlled load run accepted 11,100 submissions at 219 jobs/s; p95 was
-  166 ms and p99 was below 200 ms on the local test environment.
+- **66 Rust tests** passed against live PostgreSQL 18: state-machine matrix,
+  overflow-safe retry math, atomic claim fencing under 8-way contention,
+  capacity-token limits across 12-way races, cron occurrence deduplication,
+  DLQ replay inheritance, UNKNOWN reconciliation policies, subject-tier
+  correctness, heartbeat pruning, audit writes.
+- **Pipeline e2e**: outbox row → JetStream publish → durable consumer claim →
+  handler execution → COMPLETED with stored result; failure path lands in DLQ.
+- **Race harness**: 3 replicas × 40 jobs in ~32 s with zero double-execution.
+- **13 Playwright browser e2e** including axe accessibility scans asserting
+  zero critical/serious violations, plus 4 visual-regression baselines.
+- **51 adversarial payload attacks** repelled with correct status codes,
+  standard error envelopes, and no internal-detail leakage.
+- The controlled load run submitted 11,100 jobs at 219/s; p95 166 ms on the
+  development environment.
 
 These figures are development-environment evidence, not a production capacity
-guarantee. Production readiness still requires deployment-specific load, soak,
-failover, backup/restore, and external-side-effect testing.
+guarantee.
 
-## Optional production extensions
+## Bonus features
 
-- **RBAC:** owners/admins manage queues and members; members submit and retry
-  jobs; viewers are read-only. Owners/admins can set a membership role through
-  `POST /organizations/:id/members`.
-- **Live updates:** use authenticated, project-scoped snapshots at
-  `/events/stream?project_id=…` (SSE) or `/events/ws?project_id=…` (WebSocket).
-- **Queue sharding:** set `shard_count` (1–128) when creating a queue. New jobs
-  are deterministically routed by idempotency/routing key to a NATS shard.
-- **AI failure summaries:** explicitly set `AI_SUMMARIES_ENABLED=true`,
-  `OPENAI_API_KEY`, and optionally `OPENAI_MODEL`. This background task is
-  non-critical; scheduling continues if the provider is unavailable.
+All eight are implemented and tested:
+
+- **Workflow dependencies:** create DAGs of jobs; children wait until all
+  parents complete. Cycles rejected at creation (app-level Kahn's check +
+  database trigger).
+- **Rate limiting:** per-user fixed-window limiter on every authenticated route
+  (`API_RATE_LIMIT_PER_MIN`, 0 disables) and per-queue admission limits.
+- **Distributed locking:** advisory-lock leader election ensures a single
+  active scheduler; crash-safe (session-scoped lock auto-releases).
+- **Queue sharding:** set `shard_count` (1–128) at creation; jobs are routed
+  deterministically by FNV hash of their routing key.
+- **Event-driven execution:** transactional outbox + NOTIFY wake means job
+  promotion latency is bounded by the relay, not the poll interval.
+- **WebSocket + SSE live updates:** authenticated, project-scoped snapshot
+  streams at `/events/ws` and `/events/stream?project_id=…`.
+- **RBAC:** owner/admin manage configuration and members; members submit work;
+  viewers are read-only. Enforced per-route and audited.
+- **AI failure summaries:** works with any OpenAI-compatible chat/completions
+  endpoint (OpenAI, NVIDIA NIM, vLLM) via `AI_LLM_BASE_URL`,
+  `OPENAI_API_KEY`, `OPENAI_MODEL`, and optional
+  `AI_MODEL_FALLBACKS=m1,m2`. Set `AI_SUMMARIES_ENABLED=true`; entries appear
+  in the DLQ panel's ✨AI viewer ~10 s after dead-lettering.
+
+## API versioning
+
+The stable contract is mounted at **`/api/v1/*`**. Unversioned aliases exist
+for legacy clients but are frozen — new integrations must use the prefix.
+Verb policy: `PATCH` mutates stored state; POST verb-subresources
+(`/jobs/:id/retry`, `/dlq/:id/replay`) are actions only. Superseded endpoints
+emit RFC-8594 `Deprecation`/`Sunset` headers (see `POST /queues/:id/pause`).
 
 ## Documentation
 

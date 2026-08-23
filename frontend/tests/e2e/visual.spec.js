@@ -2,6 +2,8 @@
 // every surface is captured against a freshly created, empty workspace so
 // counters are deterministic across runs.
 import { test, expect } from '@playwright/test'
+
+test.skip(!!process.env.CI, 'visual baselines require a single consistent OS/font environment')
 import AxeBuilder from '@axe-core/playwright'
 
 const uniq = () => Date.now() + '-' + Math.floor(Math.random() * 1e6)

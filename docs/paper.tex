@@ -1,0 +1,427 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ──
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{amsmath}
+\usepackage{listings}
+\usepackage{microtype}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% ── Colors ──
+\definecolor{accent}{HTML}{1a6fc4}
+\definecolor{codebg}{HTML}{f5f5f5}
+\definecolor{darkgray}{HTML}{333333}
+
+% ── Hyperref ──
+\hypersetup{colorlinks=true, linkcolor=accent, urlcolor=accent, pdftitle={Jobflow — Distributed Job Scheduler}}
+
+% ── Section styling ──
+\titleformat{\section}{\large\bfseries\color{darkgray}}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalsize\bfseries\color{darkgray}}{\thesubsection}{0.8em}{}
+\titlespacing{\section}{0pt}{16pt}{8pt}
+\titlespacing{\subsection}{0pt}{12pt}{6pt}
+
+% ── Header/footer ──
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Jobflow — Distributed Job Scheduler}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Code listing ──
+\lstset{backgroundcolor=\color{codebg}, basicstyle=\ttfamily\small, frame=single, breaklines=true, columns=fullflexible}
+
+\begin{document}
+
+% ══════════════════════════════════════════
+% TITLE PAGE
+% ══════════════════════════════════════════
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+{\Huge\bfseries Jobflow\par}
+\vspace{0.3cm}
+{\Large Distributed Job Scheduler\par}
+\vspace{1.5cm}
+{\large A production-inspired platform for reliable, multi-tenant\\
+execution of asynchronous background jobs.\par}
+\vspace{2cm}
+{\large Built with \textbf{Rust}, \textbf{PostgreSQL}, \textbf{NATS JetStream}, and \textbf{React}\par}
+\vspace{2.5cm}
+\includegraphics[width=0.92\textwidth]{assets/architecture-new.png}
+\vspace{1.5cm}
+
+{\large\textbf{Live Demo:} \url{https://jobflow-nlwj.onrender.com}\par}
+\vspace{0.8cm}
+{\large\textbf{Source:} \url{https://github.com/Arunkumar06-cmd/distributed-job-scheduler}\par}
+\vspace{1.5cm}
+{\large Arunkumar K\par}
+{\normalsize SDE Intern Assignment\par}
+\vfill
+\end{titlepage}
+
+% ══════════════════════════════════════════
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════
+\section{System Overview}
+
+Jobflow is a distributed job scheduling platform that reliably executes
+asynchronous background jobs across multiple workers. It provides durable
+handoff via a transactional outbox, bounded concurrency via capacity tokens,
+lease-based fencing against stale workers, automatic retries with configurable
+backoff strategies, and a dead-letter queue for permanent failures.
+
+The system is organised as a Rust workspace with seven crates:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llp{9cm}}
+\toprule
+\textbf{Crate} & \textbf{Binary} & \textbf{Responsibility} \\
+\midrule
+\texttt{common} & library & Shared configuration, error types, ID generation, task-local request-id propagation \\
+\texttt{domain} & library & Pure business logic: job lifecycle state machine, retry policies, cron parsing, queue validation \\
+\texttt{db} & library & All PostgreSQL queries, migrations, per-test database isolation, connection pooling \\
+\texttt{api} & \texttt{api} & REST API server (Axum), authentication, RBAC, rate limiting, SSE/WebSocket, static file serving \\
+\texttt{outbox} & \texttt{outbox} & Transactional outbox relay: claims unpublished events, publishes to JetStream with dedup \\
+\texttt{scheduler} & \texttt{scheduler} & Cron runner, scheduled-job promotion, retry requeue, lease reaping, UNKNOWN reconciliation, archival \\
+\texttt{worker} & \texttt{worker} & JetStream pull consumers, atomic job claiming, handler execution with panic/timeout guards, graceful shutdown \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Architecture}
+
+The system follows a two-authority model: PostgreSQL is the single source of
+truth for job state, and NATS JetStream handles message delivery to workers.
+A transactional outbox guarantees that no job is lost between the database
+commit and the broker publish.
+
+\begin{enumerate}
+\item A client submits a job via \texttt{POST /jobs}. The API validates the
+request, resolves shard routing, and inserts both the job row and an outbox
+event in a single ACID transaction.
+\item The outbox relay claims unpublished events (\texttt{SKIP LOCKED}),
+publishes them to JetStream with a stable \texttt{Nats-Msg-Id} for
+broker-side deduplication, and deletes the outbox rows on successful publish.
+Failed publishes receive exponential backoff via a \texttt{publish\_attempts}
+column.
+\item Workers attach shared durable pull consumers (named by hash of
+stream+subject, stable across restarts) and receive messages. Each message
+triggers an atomic claim: the worker locks the queue row, reserves a capacity
+token (\texttt{SKIP LOCKED}), transitions the job from QUEUED to CLAIMED with
+an incremented \texttt{lease\_epoch}, and creates an execution ledger row —
+all in one transaction.
+\item The worker transitions to RUNNING and spawns a lease renewer that
+extends the PostgreSQL lease every heartbeat interval. Simultaneously, it sends
+NATS \texttt{InProgress} acknowledgements to extend the JetStream ack-wait.
+\item The handler executes under a panic guard and hard timeout. On success,
+\texttt{complete\_job} transitions RUNNING to COMPLETED (fenced by epoch),
+releases the capacity token, resolves workflow DAG edges, and ACKs the NATS
+message. On failure, \texttt{fail\_job} either schedules a retry
+(RETRY\_WAIT with computed backoff) or dead-letters the job.
+\item A scheduler process (elected via PostgreSQL advisory lock, woken by
+LISTEN/NOTIFY) promotes scheduled jobs, requeues expired retries, fires cron
+occurrences with deterministic deduplication, reaps stale leases, reconciles
+UNKNOWN\_EXTERNAL\_RESULT jobs, and manages archival housekeeping.
+\end{enumerate}
+
+\section{Database Design}
+
+The schema uses 24 tables across three tiers: hot (active jobs), warm
+(executions, logs), and cold (archive twins). All enums are PostgreSQL native
+types mapped 1:1 to Rust enums via sqlx derive.
+
+\subsection{Key Design Decisions}
+
+\begin{description}[style=nextline]
+\item[Lease Epoch Fencing] Each claim increments \texttt{lease\_epoch}. All
+subsequent updates (complete, fail, renew) require both the worker ID and the
+epoch to match. A stale worker's update affects zero rows and is silently
+fenced.
+\item[Capacity Tokens] Each queue has \texttt{max\_concurrency} token rows.
+Claiming atomically reserves a free token (\texttt{SKIP LOCKED}); completing
+or failing releases it. A database trigger keeps tokens in sync when
+concurrency is resized.
+\item[Idempotency] A unique constraint on \texttt{(queue\_id,
+idempotency\_key)} prevents duplicate job creation. The API accepts the key
+via header (preferred) or body; empty keys are treated as absent.
+\item[Cron Deduplication] The \texttt{scheduled\_occurrences} table uses a
+composite primary key \texttt{(scheduled\_job\_id, fire\_time)}. Multiple
+scheduler replicas race to insert; the winner creates the job, losers detect
+the conflict and skip.
+\item[Hot/Cold Separation] Terminal jobs older than \texttt{ARCHIVE\_AFTER\_DAYS}
+move — with their executions, logs, and replayed DLQ entries — into
+\texttt{*\_archive} twin tables. Un-replayed DLQ entries block archival.
+Measured throughput: $\sim$4{,}500 rows/s.
+\item[Migration Idempotency] Every migration is guarded (IF NOT EXISTS, DO
+\$\$ blocks) and the test harness applies the full set twice on every run,
+continuously proving that drifted schemas converge.
+\end{description}
+
+\subsection{Indexes}
+
+\begin{lstlisting}
+idx_jobs_queued            ON jobs(queue_id, priority DESC, created_at) WHERE status = 'QUEUED'
+idx_jobs_retry             ON jobs(next_retry_at) WHERE status = 'RETRY_WAIT'
+idx_jobs_queue_shard_status ON jobs(queue_id, shard_id, status)
+idx_jobs_queue_created_at  ON jobs(queue_id, created_at DESC)
+idx_outbox_claim           ON outbox_events(priority DESC, created_at) WHERE published_at IS NULL
+idx_executions_job_started ON job_executions(job_id, started_at DESC)
+idx_audit_actor_time       ON audit_log(actor_id, created_at DESC)
+\end{lstlisting}
+
+Partial indexes match exact query patterns: queue-claim scans, retry-requeue
+scans, scheduler promotion scans, and outbox relay anti-joins. Composite
+indexes support rate-limit counting and workflow resolution without full-table
+scans.
+
+\section{Backend Engineering}
+
+\subsection{API Surface}
+
+The stable contract is mounted at \texttt{/api/v1/*} with frozen unversioned
+aliases. 37 endpoints cover authentication, tenancy management, queue
+configuration, job lifecycle, scheduling, worker monitoring, DLQ management,
+batch operations, workflow DAGs, and observability.
+
+\subsection{Authentication}
+
+\begin{itemize}[nosep]
+\item Argon2id password hashing with per-hash random salts
+\item 1-hour access tokens (HS256 JWT) rotated by 30-day refresh tokens
+\item Typed claims (\texttt{typ: access|refresh}) prevent cross-use
+\item \texttt{POST /auth/refresh} issues a fresh pair; stolen access tokens
+have a maximum blast radius of one hour
+\end{itemize}
+
+\subsection{Authorization}
+
+Four roles (owner, admin, member, viewer) enforced per-route via a
+single-round-trip query (\texttt{authorize\_queue}) that returns the queue
+row, org ID, and caller's role simultaneously. Owner memberships are immutable
+through the API to prevent lockout.
+
+\subsection{Validation}
+
+Layered validation: the \texttt{validator} crate for declarative constraints,
+domain-level validators for cross-field rules (retry bounds, delay ordering),
+payload object/size checks (256 KiB cap), control-character rejection, and
+strict enum parsing that rejects unknown values rather than coercing.
+
+\subsection{Error Handling}
+
+All errors flow through a single \texttt{AppError} enum mapped to HTTP status
+codes. Internal failures (SQL, IO, driver) log full detail at \texttt{error!}
+level but return only \texttt{\{error:\{code:"Internal",message:"internal
+server error"\},request\_id\}} to clients — no stack traces, SQL text, or
+file paths. A task-local request ID correlates error bodies with the
+\texttt{x-request-id} response header. A middleware rewrites framework-generated
+plain-text rejections (body-limit, query deserialization) into the same
+envelope.
+
+\subsection{Rate Limiting}
+
+Per-user fixed-window limiter (default 600 req/min, configurable) checked
+after authentication. Per-queue admission limits use a database-backed count
+of jobs created within a rolling window.
+
+\subsection{Audit Trail}
+
+Privileged mutations (queue configuration, pause/resume, DLQ replay, membership
+upsert, manual retry) write to an \texttt{audit\_log} table with actor, org,
+action, target, and JSONB details. Writes are best-effort: audit failures log
+warnings but never block the user's operation.
+
+\section{Reliability \& Concurrency}
+
+\subsection{Delivery Guarantee}
+
+The system provides \textbf{at-least-once delivery} with idempotent handlers.
+True exactly-once is impossible across DB + broker + external service
+boundaries. The defence-in-depth stack:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{4.5cm}p{5cm}p{6cm}}
+\toprule
+\textbf{Failure} & \textbf{Detection} & \textbf{Recovery} \\
+\midrule
+API commits but publish fails & Outbox row persists & Relay retries with backoff \\
+Relay publishes then crashes & Lease expires & Another relay reclaims; JetStream dedup suppresses duplicate \\
+Worker crashes mid-job & Lease expiry + JetStream redelivery & Another worker claims with epoch+1; stale worker fenced \\
+Worker cannot renew lease 3$\times$ & Consecutive renewal errors & Worker self-fences; refuses to commit blind \\
+Handler panics or hangs & \texttt{catch\_unwind} + timeout & Retryable failure; consumer task survives \\
+Queue paused & Claim returns QueuePaused & NAK with delay; message redelivered when resumed \\
+UNKNOWN external outcome & Reconciler after grace period & Policy: DLQ (default), redrive, or complete \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Concurrency Proof Tests}
+
+\begin{itemize}[nosep]
+\item \textbf{Single-winner}: 8 workers race one job via \texttt{join\_all};
+exactly 1 succeeds.
+\item \textbf{Capacity}: 12 workers race on a capacity-3 queue; exactly 3
+claim, the rest receive QueueAtCapacity.
+\item \textbf{Race harness}: 3 replicas $\times$ 40 jobs through a shared
+durable; zero double-execution (one ledger row per job), distribution across
+replicas, no leaked capacity tokens.
+\end{itemize}
+
+\subsection{Handler Safety}
+
+Handlers execute inside \texttt{catch\_unwind} and a hard timeout
+(\texttt{HANDLER\_TIMEOUT\_SECS}). A panic converts to retryable
+\texttt{handler\_panicked}; a hang becomes \texttt{handler\_timeout}. Both are
+safe under the idempotency contract. Handlers dispatch onto a semaphore-bounded
+pool (\texttt{WORKER\_CONCURRENCY}) — one slow job cannot starve its queue.
+
+\section{Frontend \& UX}
+
+The dashboard is a React SPA (Vite) with a visionOS-inspired dark glassmorphism
+design: translucent blurred panels, neon accent colours, and layered spatial
+depth (live metrics on the closest layer, history behind).
+
+\begin{itemize}[nosep]
+\item \textbf{Live updates}: project-scoped SSE stream drives instant refreshes
+when any job count changes; slow-poll fallback when SSE is unavailable.
+\item \textbf{Charts}: throughput time-series (completed vs failed per minute),
+status donut, capacity utilisation ring, lifecycle pipeline strip — all
+clickable to filter the job list.
+\item \textbf{DLQ management}: per-entry Replay and AI-generated failure
+analysis viewer.
+\item \textbf{Accessibility}: axe-enforced zero critical/serious violations
+including color contrast; ARIA labels, keyboard navigation, screen-reader
+support.
+\item \textbf{Testing}: 7 vitest unit tests (token rotation, formatters, crash
+containment) + 14 Playwright browser e2e tests against the real API + 4
+visual-regression baselines.
+\end{itemize}
+
+\section{API Design}
+
+The stable contract is mounted at \texttt{/api/v1/*} with frozen unversioned
+aliases. 37 endpoints are documented in \texttt{docs/openapi.json}
+(41 schemas), programmatically cross-checked against route registrations.
+
+\subsection{Conventions}
+
+\begin{itemize}[nosep]
+\item \textbf{Error envelope}: \texttt{\{error:\{code, message\},
+request\_id\}} with machine-readable codes (NotFound, Validation,
+RateLimited, PayloadTooLarge, …)
+\item \textbf{Pagination}: \texttt{page} + \texttt{page\_size} (clamped
+1–100); responses carry \texttt{total} and \texttt{total\_pages}
+\item \textbf{Idempotency}: \texttt{Idempotency-Key} header beats body
+\texttt{idempotency\_key}; duplicates return 409 Conflict
+\item \textbf{Verb policy}: PATCH mutates stored state; POST verb-subresources
+are actions only; superseded endpoints emit RFC-8594 Deprecation/Sunset headers
+\item \textbf{Timezone}: all timestamps are UTC (RFC 3339); the frontend
+renders in the user's timezone
+\end{itemize}
+
+\section{Documentation}
+
+\begin{itemize}[nosep]
+\item \textbf{README.md}: project overview, quickstart, reliability model,
+live demo link
+\item \textbf{docs/architecture.md}: component responsibilities, message
+flow, failure-recovery table, NATS subjects, deployment model
+\item \textbf{docs/design-decisions.md}: 15+ ADRs covering PostgreSQL vs
+Redis, NATS vs Kafka, outbox pattern, lease fencing vs Redlock, advisory lock
+vs etcd, token model, rate limiting, audit trail, hot/cold separation, handler
+safety, testing isolation, API versioning
+\item \textbf{docs/er-diagram.md}: Mermaid ER diagram with 28 entities, key
+relationships, index inventory, lifecycle narrative
+\item \textbf{docs/api.md}: REST route reference with parameter descriptions
+\item \textbf{docs/openapi.json}: OpenAPI 3.0 spec (37 paths, 41 schemas)
+programmatically cross-checked against route registrations
+\item \textbf{docs/testing.md}: test layer map, runnable commands, isolation
+design, CI topology
+\item \textbf{.env.example}: all 20+ configuration knobs documented
+\item \textbf{SECURITY.md}: authentication model, input handling, transport
+security, scope boundaries, vulnerability reporting
+\end{itemize}
+
+\section{Testing}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llrl}
+\toprule
+\textbf{Layer} & \textbf{Location} & \textbf{Count} & \textbf{Runtime} \\
+\midrule
+Domain unit tests & \texttt{domain/src} & 28 & $<$1 s \\
+Shared unit tests & \texttt{common/src}, \texttt{api/src}, \texttt{worker/src} & 26 & $<$2 s \\
+DB integration & \texttt{db/src/integration\_tests.rs} & 12 & $\sim$5 s \\
+Pipeline e2e & \texttt{worker/tests/pipeline\_e2e.rs} & 1 & $\sim$5 s \\
+Race harness & \texttt{worker/tests/race\_harness.rs} & 1 & $\sim$32 s \\
+Archive bench & \texttt{db/tests/archive\_bench.rs} & 1 & $\sim$2 s \\
+Frontend unit & \texttt{frontend/src} & 7 & $\sim$4 s \\
+Browser e2e & \texttt{frontend/tests/e2e} & 14 & $\sim$40 s \\
+Visual regression & \texttt{frontend/tests/e2e} & 4 & $\sim$15 s \\
+Adversarial payloads & \texttt{scripts/payload\_attacks.py} & 51 & $\sim$30 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Key Design Decisions}
+
+\begin{description}[style=nextline]
+\item[Per-test databases] Each integration test creates a throwaway
+\texttt{js\_test\_*} database and applies all migrations twice, proving
+idempotency continuously. No truncate races; full parallelism.
+\item[No mocks below unit layer] DB integration tests and pipeline e2e speak
+to real PostgreSQL and real JetStream. The only stubs are fetch-level doubles
+in the frontend refresh-wrapper test.
+\item[CI topology] Four gating jobs: \texttt{test} (build + test + clippy +
+vitest + npm audit), \texttt{pipeline-e2e} (pipeline + race harness + archive
+bench), \texttt{frontend-e2e} (Playwright against real API), \texttt{coverage}
+(llvm-cov summary). None are allow-failure.
+\end{description}
+
+\section{Deployment}
+
+The system deploys as a single Docker container on Render.com's free tier,
+running NATS, API, worker, and scheduler behind a supervisor. PostgreSQL is
+provisioned separately as a managed database. The live demo is available at
+\url{https://jobflow-nlwj.onrender.com}.
+
+\begin{lstlisting}
+# render.yaml blueprint
+services:
+  - type: web
+    name: jobflow
+    runtime: docker
+    dockerfilePath: ./deploy/Dockerfile.all-in-one
+    plan: free
+    healthCheckPath: /health
+databases:
+  - name: jobflow-db
+    plan: free
+\end{lstlisting}
+
+\section{Conclusion}
+
+Jobflow demonstrates production-grade engineering across every layer of a
+distributed system: a provably correct state machine, atomic concurrency
+primitives with test-backed invariants, defence-in-depth error handling,
+comprehensive observability, and a polished user interface. Every design
+decision is documented with its trade-offs, every critical path is covered by
+automated tests that run in CI, and the live deployment validates the full
+pipeline from HTTP request to job execution to failure recovery.
+
+\end{document}

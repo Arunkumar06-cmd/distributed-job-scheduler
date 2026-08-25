@@ -13,7 +13,8 @@ export AI_SUMMARIES_ENABLED="${AI_SUMMARIES_ENABLED:-false}"
 export RUST_LOG="${RUST_LOG:-info}"
 
 echo "=== Jobflow starting on port $API_PORT ==="
-echo "DATABASE_URL is set: $([ -n "$DATABASE_URL" ] && echo yes || echo NO — THIS WILL FAIL)"
+if [ -z "$DATABASE_URL" ]; then echo "FATAL: DATABASE_URL not set"; exit 1; fi
+echo "DATABASE_URL: set"
 echo "AI summaries: $AI_SUMMARIES_ENABLED"
 
 # ── Start NATS JetStream in background ──

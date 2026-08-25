@@ -1,9 +1,5 @@
-# Render.com all-in-one deployment
-# Runs NATS + API + Worker + Scheduler in one container.
-# PostgreSQL is provisioned separately on Render (free tier).
-
+# ── Stage 1: Build Rust binaries ──
 FROM rust:1-slim AS builder
-
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
@@ -14,10 +10,9 @@ COPY outbox ./outbox
 COPY worker ./worker
 COPY scheduler ./scheduler
 COPY api ./api
-COPY docs ./docs
 RUN cargo build --release -p api -p worker
 
-# ── frontend ──
+# ── Stage 2: Build frontend ──
 FROM node:20-alpine AS frontend
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -25,30 +20,31 @@ RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
-# ── runtime ──
+# ── Stage 3: Download NATS binary ──
+FROM alpine:3.20 AS nats
+ADD https://github.com/nats-io/nats-server/releases/download/v2.10.18/nats-server-v2.10.18-linux-amd64.tar.gz /tmp/nats.tar.gz
+RUN tar -xzf /tmp/nats.tar.gz -C /tmp && \
+    mv /tmp/nats-server-v2.10.18-linux-amd64/nats-server /nats-server && \
+    chmod +x /nats-server
+
+# ── Stage 4: Minimal runtime ──
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
-    postgresql-client \
-    postgresql \
-    supervisor \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# NATS server binary (static, no deps)
-ADD https://github.com/nats-io/nats-server/releases/download/v2.10.18/nats-server-v2.10.18-linux-amd64.tar.gz /tmp/nats.tar.gz
-RUN tar -xzf /tmp/nats.tar.gz -C /tmp && \
-    mv /tmp/nats-server-v2.10.18-linux-amd64/nats-server /usr/local/bin/nats-server && \
-    chmod +x /usr/local/bin/nats-server && rm -rf /tmp/nats*
-
-# Rust binaries
+# Binaries
 COPY --from=builder /app/target/release/api /usr/local/bin/api
 COPY --from=builder /app/target/release/worker /usr/local/bin/worker
+COPY --from=nats /nats-server /usr/local/bin/nats-server
+RUN chmod +x /usr/local/bin/nats-server
 
-# Frontend static files (served by the API's fallback route)
+# Frontend static files
 COPY --from=frontend /frontend/dist /app/frontend/dist
 
-# Migrations for sqlx::migrate!
+# Migrations
 COPY db/migrations /app/db/migrations
 
 # Startup script
@@ -56,10 +52,6 @@ COPY deploy/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
 WORKDIR /app
-
 EXPOSE 8080
-
-HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
-  CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
 
 CMD ["/app/start.sh"]

@@ -227,13 +227,22 @@ strict enum parsing that rejects unknown values rather than coercing.
 \subsection{Error Handling}
 
 All errors flow through a single \texttt{AppError} enum mapped to HTTP status
-codes. Internal failures (SQL, IO, driver) log full detail at \texttt{error!}
-level but return only \texttt{\{error:\{code:"Internal",message:"internal
-server error"\},request\_id\}} to clients — no stack traces, SQL text, or
-file paths. A task-local request ID correlates error bodies with the
-\texttt{x-request-id} response header. A middleware rewrites framework-generated
-plain-text rejections (body-limit, query deserialization) into the same
-envelope.
+codes. Internal failures (SQL, IO, driver) log full detail server-side at
+\texttt{error!} level but return only a generic message to clients — no stack
+traces, SQL text, or file paths. A task-local request ID correlates error
+bodies with the \texttt{x-request-id} response header. A middleware rewrites
+framework-generated plain-text rejections (body-limit, query deserialization)
+into the same envelope.
+
+\begin{lstlisting}[language={},caption={Standard error envelope returned to clients}]
+{
+  "error": {
+    "code": "Internal",
+    "message": "internal server error"
+  },
+  "request_id": "a7950f62-0368-4124-b106-9489c85d33ee"
+}
+\end{lstlisting}
 
 \subsection{Rate Limiting}
 

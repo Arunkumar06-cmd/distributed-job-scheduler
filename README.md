@@ -6,11 +6,16 @@
 </p>
 
 <p align="center">
+  🌐 <a href="https://jobflow-nlwj.onrender.com"><strong>Live Demo</strong></a> — no setup required, register and start submitting jobs
+</p>
+
+<p align="center">
   <a href="https://github.com/Arunkumar06-cmd/distributed-job-scheduler/actions"><img src="https://img.shields.io/github/actions/workflow/status/Arunkumar06-cmd/distributed-job-scheduler/ci.yml?branch=main&label=CI&style=flat-square" alt="CI status" /></a>
   <img src="https://img.shields.io/badge/Rust-stable-000000?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/PostgreSQL-18-4169E1?style=flat-square&logo=postgresql" alt="PostgreSQL 18" />
   <img src="https://img.shields.io/badge/NATS-JetStream-27AAE1?style=flat-square" alt="NATS JetStream" />
   <img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT license" />
+  <a href="https://jobflow-nlwj.onrender.com"><img src="https://img.shields.io/badge/🟢_Live_Demo-jobflow--nlwj.onrender.com-00A8E8?style=flat-square" alt="Live Demo" /></a>
 </p>
 
 This is a production-inspired scheduler for applications that need more than a
@@ -32,6 +37,20 @@ PostgreSQL ── transactional outbox ──► NATS JetStream ──► worker
         │
         └── queues · jobs · executions · logs · retries · DLQ · schedules
 ```
+
+## Try it live
+
+**[https://jobflow-nlwj.onrender.com](https://jobflow-nlwj.onrender.com)**
+
+| Step | What to do |
+|---|---|
+| 1 | Register any email and password (≥8 chars) |
+| 2 | Follow the wizard: create an organization → project → queue |
+| 3 | Click **Create job**, paste `{"type": "echo"}`, submit |
+| 4 | Watch it go **QUEUED → CLAIMED → RUNNING → COMPLETED** in seconds |
+| 5 | Submit `{"type": "always_fail"}` with max_attempts 2 → watch retries → check the **Dead letters** tab → hit **Replay** or **✨AI** |
+
+> Free tier spins down after 15 min idle. First request takes ~30 s to wake.
 
 ## Architecture at a glance
 

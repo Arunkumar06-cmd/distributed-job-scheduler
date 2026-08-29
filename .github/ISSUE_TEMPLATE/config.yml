@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Arunkumar06-cmd/distributed-job-scheduler/security/advisories/new
+    about: Do not open public issues for security findings. Use a draft security advisory.
+  - name: Question / Discussion
+    url: https://github.com/Arunkumar06-cmd/distributed-job-scheduler/discussions/new?category=q-a
+    about: Ask a question or start a discussion.

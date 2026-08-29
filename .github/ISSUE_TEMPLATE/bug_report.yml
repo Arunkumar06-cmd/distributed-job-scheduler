@@ -1,0 +1,46 @@
+name: Bug report
+description: Report something that is not working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: Expected to see QUEUED but got 500...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal commands or API calls that reproduce the issue.
+      placeholder: |
+        1. POST /api/v1/organizations ...
+        2. POST /api/v1/queues ...
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste relevant server logs or browser console output.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: The commit SHA or tag you are running (from git log).
+      placeholder: f939443
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
